@@ -1,0 +1,617 @@
+package org.linox.mobile
+
+import android.content.Context
+import android.os.Build
+import java.io.BufferedInputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.concurrent.Executors
+import org.json.JSONObject
+
+/**
+ * LinOx RootFS installer.
+ *
+ * Pulls public Docker Hub OCI images for linux/arm64 without requiring
+ * Docker credentials. Authentication follows the registry's WWW-Authenticate
+ * Bearer challenge, which avoids hard-coding assumptions about Docker Hub's
+ * token endpoint.
+ *
+ * Images:
+ *   library/debian:12
+ *   library/ubuntu:24.04
+ *   library/ubuntu:22.04
+ *   library/alpine:3.24
+ *
+ * Every downloaded blob is SHA-256 checked against its OCI digest before
+ * extraction. Registry redirects to blob/CDN URLs are followed without
+ * forwarding the Bearer token to the redirected host.
+ */
+class RootfsManager(private val context: Context) {
+
+    data class Result(val ok: Boolean, val message: String)
+
+    private data class AuthChallenge(
+        val realm: String,
+        val service: String?,
+        val scope: String?
+    )
+
+    private val executor = Executors.newCachedThreadPool()
+
+    private val baseDir: File =
+        File(context.getExternalFilesDir(null), "linox/distros").apply { mkdirs() }
+
+    fun rootfsDir(id: String): File = File(baseDir, "$id/rootfs")
+
+    fun isInstalled(id: String): Boolean {
+        val root = rootfsDir(id)
+        return File(root, "etc/os-release").isFile &&
+            (File(root, "bin").isDirectory || File(root, "usr").isDirectory)
+    }
+
+    fun installAsync(
+        distro: Distro,
+        onProgress: (String) -> Unit,
+        onDone: (Result) -> Unit
+    ) {
+        executor.execute {
+            try {
+                install(distro, onProgress)
+                onDone(Result(true, "${distro.name} ${distro.version} installed"))
+            } catch (t: Throwable) {
+                onDone(
+                    Result(
+                        false,
+                        "${t.javaClass.simpleName}: ${t.message ?: "unknown error"}"
+                    )
+                )
+            }
+        }
+    }
+
+    private fun install(distro: Distro, onProgress: (String) -> Unit) {
+        require(Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }) {
+            "This LinOx build currently requires an ARM64 Android device."
+        }
+
+        val image = when (distro.id) {
+            "debian12" -> "library/debian:12"
+            "ubuntu2404" -> "library/ubuntu:24.04"
+            "ubuntu2204" -> "library/ubuntu:22.04"
+            "alpine" -> "library/alpine:3.24"
+            else -> error("Unsupported distribution: ${distro.id}")
+        }
+
+        val target = rootfsDir(distro.id)
+        val parent = target.parentFile ?: error("Invalid rootfs directory")
+        parent.mkdirs()
+
+        val work = File(parent, ".install-${System.currentTimeMillis()}").apply {
+            mkdirs()
+        }
+
+        try {
+            onProgress("Connecting to Docker Registry...")
+            val manifest = resolveManifest(image, onProgress)
+            val layers = manifest.optJSONArray("layers")
+                ?: error("Selected image manifest contains no layers")
+
+            onProgress("Selected linux/arm64 image")
+            onProgress("Found ${layers.length()} filesystem layers")
+
+            target.deleteRecursively()
+            target.mkdirs()
+
+            for (i in 0 until layers.length()) {
+                val digest = layers.getJSONObject(i).getString("digest")
+                val layer = File(work, "layer-$i")
+                onProgress("Downloading layer ${i + 1}/${layers.length()}...")
+                downloadBlob(image, digest, layer, onProgress)
+
+                onProgress("Extracting layer ${i + 1}/${layers.length()}...")
+                extractLayer(layer, target)
+                layer.delete()
+            }
+
+            onProgress("Applying filesystem whiteouts...")
+            applyWhiteouts(target)
+
+            File(target, "etc").mkdirs()
+            File(target, "tmp").mkdirs()
+
+            val resolv = File(target, "etc/resolv.conf")
+            if (!resolv.exists() || resolv.length() == 0L) {
+                resolv.writeText(
+                    "nameserver 1.1.1.1\n" +
+                        "nameserver 8.8.8.8\n"
+                )
+            }
+
+            check(File(target, "etc/os-release").isFile) {
+                "RootFS extraction completed but /etc/os-release is missing."
+            }
+
+            File(parent, ".installed").writeText(
+                "image=$image\n" +
+                    "architecture=linux/arm64\n" +
+                    "installed=${System.currentTimeMillis()}\n"
+            )
+
+            onProgress("✓ RootFS verified and installed.")
+        } catch (t: Throwable) {
+            target.deleteRecursively()
+            throw t
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    private fun resolveManifest(
+        image: String,
+        onProgress: (String) -> Unit
+    ): JSONObject {
+        val (repoName, reference) = splitImage(image)
+        val manifestUrl =
+            "https://registry-1.docker.io/v2/$repoName/manifests/$reference"
+
+        val accepted = listOf(
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json"
+        ).joinToString(", ")
+
+        var response = requestText(
+            URL(manifestUrl),
+            headers = mapOf("Accept" to accepted)
+        )
+
+        var raw = response.body
+        var obj = JSONObject(raw)
+
+        if (obj.has("manifests")) {
+            val manifests = obj.getJSONArray("manifests")
+            var selected: JSONObject? = null
+
+            for (i in 0 until manifests.length()) {
+                val m = manifests.getJSONObject(i)
+                val platform = m.optJSONObject("platform") ?: continue
+
+                val os = platform.optString("os")
+                val architecture = platform.optString("architecture")
+                val variant = platform.optString("variant")
+
+                if (os == "linux" && architecture == "arm64") {
+                    selected = m
+                    onProgress(
+                        "Found ARM64 variant" +
+                            if (variant.isBlank()) "" else " ($variant)"
+                    )
+                    break
+                }
+            }
+
+            val chosen = selected ?: error("No linux/arm64 image found for $image")
+            val digest = chosen.getString("digest")
+
+            response = requestText(
+                URL(
+                    "https://registry-1.docker.io/v2/$repoName/manifests/$digest"
+                ),
+                headers = mapOf("Accept" to accepted)
+            )
+
+            raw = response.body
+            obj = JSONObject(raw)
+        }
+
+        return obj
+    }
+
+    private fun downloadBlob(
+        image: String,
+        digest: String,
+        output: File,
+        onProgress: (String) -> Unit
+    ) {
+        val (repoName, _) = splitImage(image)
+        val blobUrl = URL(
+            "https://registry-1.docker.io/v2/$repoName/blobs/$digest"
+        )
+
+        var connection = openWithBearer(blobUrl)
+        var responseCode = connection.responseCode
+
+        // Docker Hub commonly returns a redirect to a CDN. Never forward
+        // the Bearer token to the redirected host.
+        if (responseCode in 300..399) {
+            val location = connection.getHeaderField("Location")
+                ?: error("Registry returned HTTP $responseCode without Location")
+            connection.disconnect()
+            val redirected = URL(blobUrl, location)
+            connection = openNoAuth(redirected)
+            responseCode = connection.responseCode
+        }
+
+        // A token can expire or be rejected. Re-discover the challenge once.
+        if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            val challenge = parseBearerChallenge(
+                connection.getHeaderField("WWW-Authenticate")
+            )
+            connection.disconnect()
+
+            if (challenge != null) {
+                val token = fetchToken(challenge)
+                connection = openWithToken(blobUrl, token)
+                responseCode = connection.responseCode
+
+                if (responseCode in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                        ?: error("Registry redirect did not include Location")
+                    connection.disconnect()
+                    connection = openNoAuth(URL(blobUrl, location))
+                    responseCode = connection.responseCode
+                }
+            }
+        }
+
+        check(responseCode in 200..299) {
+            val detail = try {
+                connection.errorStream?.bufferedReader()?.readText()?.take(500)
+            } catch (_: Throwable) {
+                null
+            }
+            connection.disconnect()
+            "Layer download HTTP $responseCode" +
+                if (detail.isNullOrBlank()) "" else ": $detail"
+        }
+
+        output.parentFile?.mkdirs()
+
+        val expected = digest.removePrefix("sha256:").lowercase()
+        val md = MessageDigest.getInstance("SHA-256")
+        val total = connection.contentLengthLong
+        var received = 0L
+
+        try {
+            connection.inputStream.use { input ->
+                FileOutputStream(output).use { out ->
+                    val buffer = ByteArray(1024 * 256)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        if (n == 0) continue
+
+                        md.update(buffer, 0, n)
+                        out.write(buffer, 0, n)
+                        received += n
+
+                        if (total > 0L) {
+                            onProgress(
+                                "  ${(received * 100L / total)}%  " +
+                                    "${formatBytes(received)} / ${formatBytes(total)}"
+                            )
+                        }
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+
+        val actual = md.digest().joinToString("") { "%02x".format(it) }
+
+        check(actual.equals(expected, ignoreCase = true)) {
+            "SHA-256 mismatch for $digest\nExpected: $expected\nActual: $actual"
+        }
+
+        onProgress("✓ SHA-256 verified")
+    }
+
+    private fun openWithBearer(url: URL): HttpURLConnection {
+        val connection = openNoAuth(url)
+        val code = connection.responseCode
+
+        if (code != HttpURLConnection.HTTP_UNAUTHORIZED) {
+            return connection
+        }
+
+        val challenge = parseBearerChallenge(
+            connection.getHeaderField("WWW-Authenticate")
+        ) ?: run {
+            connection.disconnect()
+            error("Registry returned HTTP 401 without a Bearer challenge.")
+        }
+
+        connection.disconnect()
+
+        val token = fetchToken(challenge)
+        return openWithToken(url, token)
+    }
+
+    private fun openWithToken(url: URL, token: String): HttpURLConnection =
+        (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 120_000
+            requestMethod = "GET"
+            instanceFollowRedirects = false
+            // Keep OCI blobs byte-for-byte compressed; this is required for digest verification.
+            setRequestProperty("Accept-Encoding", "identity")
+            setRequestProperty("Authorization", "Bearer $token")
+        }
+
+    private fun openNoAuth(url: URL): HttpURLConnection =
+        (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 120_000
+            requestMethod = "GET"
+            instanceFollowRedirects = false
+            // Keep OCI blobs byte-for-byte compressed; this is required for digest verification.
+            setRequestProperty("Accept-Encoding", "identity")
+        }
+
+    private data class TextResponse(
+        val body: String,
+        val code: Int
+    )
+
+    private fun requestText(
+        url: URL,
+        headers: Map<String, String> = emptyMap()
+    ): TextResponse {
+        var connection = openNoAuth(url)
+        headers.forEach { (key, value) ->
+            connection.setRequestProperty(key, value)
+        }
+
+        var code = connection.responseCode
+
+        if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            val challenge = parseBearerChallenge(
+                connection.getHeaderField("WWW-Authenticate")
+            ) ?: run {
+                val body = readError(connection)
+                connection.disconnect()
+                error("HTTP 401: $body")
+            }
+
+            connection.disconnect()
+
+            val token = fetchToken(challenge)
+            connection = openWithToken(url, token)
+            headers.forEach { (key, value) ->
+                connection.setRequestProperty(key, value)
+            }
+            code = connection.responseCode
+        }
+
+        // Manifest requests normally do not redirect, but follow a redirect
+        // defensively without carrying Authorization to another host.
+        if (code in 300..399) {
+            val location = connection.getHeaderField("Location")
+                ?: error("HTTP $code without Location")
+            connection.disconnect()
+
+            connection = openNoAuth(URL(url, location))
+            headers.forEach { (key, value) ->
+                connection.setRequestProperty(key, value)
+            }
+            code = connection.responseCode
+        }
+
+        if (code !in 200..299) {
+            val body = readError(connection)
+            connection.disconnect()
+            error("HTTP $code${if (body.isBlank()) "" else ": $body"}")
+        }
+
+        val body = connection.inputStream.bufferedReader().use { it.readText() }
+        connection.disconnect()
+
+        return TextResponse(body, code)
+    }
+
+    private fun fetchToken(challenge: AuthChallenge): String {
+        val query = StringBuilder()
+            .append("service=")
+            .append(urlEncode(challenge.service ?: "registry.docker.io"))
+
+        if (!challenge.scope.isNullOrBlank()) {
+            query.append("&scope=").append(urlEncode(challenge.scope))
+        }
+
+        // Docker accepts this client_id for anonymous token requests.
+        query.append("&client_id=linox")
+
+        val tokenUrl = URL("${challenge.realm}?$query")
+        val connection = openNoAuth(tokenUrl)
+        val code = connection.responseCode
+
+        if (code !in 200..299) {
+            val body = readError(connection)
+            connection.disconnect()
+            error("Token request HTTP $code${if (body.isBlank()) "" else ": $body"}")
+        }
+
+        val raw = connection.inputStream.bufferedReader().use { it.readText() }
+        connection.disconnect()
+
+        val json = JSONObject(raw)
+        return json.optString("token").ifBlank {
+            json.optString("access_token")
+        }.ifBlank {
+            error("Registry token response did not contain a token.")
+        }
+    }
+
+    private fun parseBearerChallenge(value: String?): AuthChallenge? {
+        if (value.isNullOrBlank()) return null
+        if (!value.trim().startsWith("Bearer", ignoreCase = true)) return null
+
+        val params = value.substringAfter("Bearer", "").trim()
+        val result = mutableMapOf<String, String>()
+
+        val regex = Regex("""([A-Za-z][A-Za-z0-9_-]*)="([^"]*)""")
+        for (match in regex.findAll(params)) {
+            result[match.groupValues[1].lowercase()] = match.groupValues[2]
+        }
+
+        val realm = result["realm"] ?: return null
+        return AuthChallenge(
+            realm = realm,
+            service = result["service"],
+            scope = result["scope"]
+        )
+    }
+
+    private fun splitImage(image: String): Pair<String, String> {
+        val slash = image.indexOf('/')
+        val colon = image.lastIndexOf(':')
+
+        if (slash <= 0 || colon <= slash) {
+            error("Invalid Docker image reference: $image")
+        }
+
+        return image.substring(0, colon) to image.substring(colon + 1)
+    }
+
+    private fun readError(connection: HttpURLConnection): String =
+        try {
+            connection.errorStream?.bufferedReader()?.readText()?.take(1000) ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+
+    private fun urlEncode(value: String): String =
+        URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024L) return "$bytes B"
+        if (bytes < 1024L * 1024L) return "${bytes / 1024L} KB"
+        if (bytes < 1024L * 1024L * 1024L) {
+            return "${bytes / (1024L * 1024L)} MB"
+        }
+        return "${bytes / (1024L * 1024L * 1024L)} GB"
+    }
+
+    private fun extractLayer(archive: File, target: File) {
+        val tar = File("/system/bin/tar")
+        check(tar.exists()) { "Android tar utility not found" }
+
+        /*
+         * Do NOT use java.util.zip.GZIPInputStream here.
+         *
+         * Docker/OCI layer blobs are compressed tar archives. On Android,
+         * HttpURLConnection can negotiate transparent content encoding, and
+         * Java's GZIPInputStream is unnecessarily fragile for some valid
+         * registry blobs. Android's own toybox tar can extract gzip/xz/bzip2
+         * and, on newer releases, zstd directly.
+         *
+         * We therefore keep the verified blob untouched and let toybox tar
+         * handle the compression format. The SHA-256 check has already been
+         * completed before this function is called.
+         */
+        val magic = ByteArray(6)
+        FileInputStream(archive).use { input ->
+            var offset = 0
+            while (offset < magic.size) {
+                val n = input.read(magic, offset, magic.size - offset)
+                if (n < 0) break
+                offset += n
+            }
+        }
+
+        fun hexByte(index: Int): String =
+            if (index < magic.size) "%02x".format(magic[index].toInt() and 0xff) else "--"
+
+        val isGzip = magic[0] == 0x1f.toByte() && magic[1] == 0x8b.toByte()
+        val isXz = magic.size >= 6 &&
+            magic[0] == 0xfd.toByte() &&
+            magic[1] == 0x37.toByte() &&
+            magic[2] == 0x7a.toByte() &&
+            magic[3] == 0x58.toByte() &&
+            magic[4] == 0x5a.toByte() &&
+            magic[5] == 0x00.toByte()
+        val isZstd = magic[0] == 0x28.toByte() &&
+            magic[1] == 0xb5.toByte() &&
+            magic[2] == 0x2f.toByte() &&
+            magic[3] == 0xfd.toByte()
+        val isBzip2 = magic[0] == 'B'.code.toByte() &&
+            magic[1] == 'Z'.code.toByte() &&
+            magic[2] == 'h'.code.toByte()
+
+        val flags = when {
+            isGzip -> listOf("-xzf")
+            isXz -> listOf("-xJf")
+            isZstd -> listOf("-xZf")
+            isBzip2 -> listOf("-xjf")
+            else -> listOf("-xf")
+        }
+
+        val kind = when {
+            isGzip -> "gzip"
+            isXz -> "xz"
+            isZstd -> "zstd"
+            isBzip2 -> "bzip2"
+            else -> "plain tar"
+        }
+
+        // Useful when diagnosing a device-specific toybox build.
+        val magicText = (0 until 6).joinToString(" ") { hexByte(it) }
+
+        val command = ArrayList<String>(flags.size + 4)
+        command.add(tar.absolutePath)
+        command.addAll(flags)
+        command.add(archive.absolutePath)
+        command.add("-C")
+        command.add(target.absolutePath)
+
+        val process = ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .start()
+
+        val output = process.inputStream.bufferedReader().readText()
+        val code = process.waitFor()
+
+        check(code == 0) {
+            "RootFS layer extraction failed.\n" +
+                "Format: $kind\n" +
+                "Magic: $magicText\n" +
+                "tar exit: $code\n" +
+                output.take(1500)
+        }
+    }
+
+    private fun applyWhiteouts(root: File) {
+        val markers = mutableListOf<File>()
+        root.walkTopDown().forEach { file ->
+            if (file.name.startsWith(".wh.")) {
+                markers += file
+            }
+        }
+
+        for (marker in markers) {
+            val parent = marker.parentFile ?: continue
+
+            if (marker.name == ".wh..wh..opq") {
+                parent.listFiles()?.forEach { child ->
+                    if (child != marker) child.deleteRecursively()
+                }
+            } else {
+                File(
+                    parent,
+                    marker.name.removePrefix(".wh.")
+                ).deleteRecursively()
+            }
+
+            marker.delete()
+        }
+    }
+}
