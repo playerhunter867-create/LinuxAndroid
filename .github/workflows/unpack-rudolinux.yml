@@ -8,11 +8,10 @@ permissions:
 
 jobs:
   unpack:
-    name: Extract ZIP and commit project
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -20,97 +19,115 @@ jobs:
       - name: Find ZIP
         shell: bash
         run: |
-          set -e
-          ZIP="$(find . -maxdepth 1 -type f -iname '*.zip' -print -quit)"
+          set -euo pipefail
+
+          ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*.zip' -print -quit)"
+
           if [ -z "$ZIP" ]; then
-            echo "ERROR: No ZIP file found in repository root."
+            echo "ERROR: ZIP file not found in repository root."
             exit 1
           fi
-          echo "ZIP: $ZIP"
+
+          echo "Found ZIP: $ZIP"
           echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
 
       - name: Extract ZIP
         shell: bash
         run: |
-          set -e
-          rm -rf extracted
-          mkdir extracted
-          unzip -q "$ZIP_PATH" -d extracted
+          set -euo pipefail
 
-          echo "ZIP contents:"
-          find extracted -maxdepth 4 -type f | sort
+          rm -rf "$GITHUB_WORKSPACE/.unpack"
+          mkdir -p "$GITHUB_WORKSPACE/.unpack"
 
-      - name: Locate Android project
+          unzip -q "$ZIP_PATH" -d "$GITHUB_WORKSPACE/.unpack"
+
+          echo "Extracted files:"
+          find "$GITHUB_WORKSPACE/.unpack" -maxdepth 5 -type f | sort
+
+      - name: Find Android project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          SETTINGS="$(find extracted -type f -name 'settings.gradle.kts' -print -quit)"
-
-          if [ -z "$SETTINGS" ]; then
-            SETTINGS="$(find extracted -type f -name 'settings.gradle' -print -quit)"
-          fi
+          SETTINGS="$(find "$GITHUB_WORKSPACE/.unpack" -type f \(             -name 'settings.gradle.kts' -o             -name 'settings.gradle'           \) -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: Android project was not found."
-            echo "Expected settings.gradle.kts or settings.gradle inside the ZIP."
+            echo "ERROR: Could not find settings.gradle.kts or settings.gradle."
+            echo "ZIP contents:"
+            find "$GITHUB_WORKSPACE/.unpack" -maxdepth 5 -type f | sort
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
-          echo "Project directory: $PROJECT_DIR"
+
+          echo "Android project found at:"
+          echo "$PROJECT_DIR"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Copy project
+      - name: Prepare project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          rm -rf project_to_copy
-          mkdir project_to_copy
+          rm -rf "$GITHUB_WORKSPACE/.project"
+          mkdir -p "$GITHUB_WORKSPACE/.project"
 
-          cp -a "$PROJECT_DIR"/. project_to_copy/
+          # tar correctly copies ALL files, including hidden files.
+          tar -C "$PROJECT_DIR" -cf - . | tar -C "$GITHUB_WORKSPACE/.project" -xf -
 
-          echo "Project prepared:"
-          find project_to_copy -maxdepth 5 -type f | sort
+          echo "Prepared project:"
+          find "$GITHUB_WORKSPACE/.project" -maxdepth 5 -type f | sort
 
-      - name: Clean repository
+      - name: Remove old repository contents
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          ZIP_NAME="$(basename "$ZIP_PATH")"
-
-          find . -mindepth 1 -maxdepth 1             ! -name ".git"             ! -name "$ZIP_NAME"             -exec rm -rf {} +
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1             ! -name ".git"             ! -name ".unpack"             ! -name ".project"             ! -name "$(basename "$ZIP_PATH")"             -exec rm -rf {} +
 
       - name: Install project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          cp -a project_to_copy/. .
+          # Copy ALL files, including .github.
+          tar -C "$GITHUB_WORKSPACE/.project" -cf - . |             tar -C "$GITHUB_WORKSPACE" -xf -
 
-          rm -rf project_to_copy
-          rm -rf extracted
+          rm -rf "$GITHUB_WORKSPACE/.project"
+          rm -rf "$GITHUB_WORKSPACE/.unpack"
           rm -f "$ZIP_PATH"
 
-      - name: Verify
+      - name: Verify project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          test -f settings.gradle.kts || test -f settings.gradle
-          test -d app
+          if [ ! -d "$GITHUB_WORKSPACE/app" ]; then
+            echo "ERROR: app/ directory was not installed."
+            exit 1
+          fi
 
-          echo "SUCCESS!"
+          if [ -f "$GITHUB_WORKSPACE/settings.gradle.kts" ]; then
+            echo "Found settings.gradle.kts"
+          elif [ -f "$GITHUB_WORKSPACE/settings.gradle" ]; then
+            echo "Found settings.gradle"
+          else
+            echo "ERROR: Gradle settings file missing."
+            exit 1
+          fi
+
           echo
-          echo "Repository:"
-          find . -maxdepth 4 -type f             ! -path "./.git/*" | sort
+          echo "===== RudoLinux installed successfully ====="
+          echo
+          find "$GITHUB_WORKSPACE" -maxdepth 4 -type f             ! -path "$GITHUB_WORKSPACE/.git/*" | sort
 
-      - name: Commit changes
+      - name: Commit and push
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -118,7 +135,7 @@ jobs:
           git add -A
 
           if git diff --cached --quiet; then
-            echo "Nothing changed."
+            echo "Nothing to commit."
             exit 0
           fi
 
