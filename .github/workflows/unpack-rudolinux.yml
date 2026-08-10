@@ -15,90 +15,64 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Find ZIP
-        id: find_zip
+        id: zip
+        shell: bash
         run: |
-          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          set -e
+
+          ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
 
           if [ -z "$ZIP" ]; then
-            echo "ERROR: ZIP file not found in repository root."
+            echo "ERROR: ZIP file not found!"
             exit 1
           fi
 
-          echo "ZIP found: $ZIP"
+          ZIP_NAME="$(basename "$ZIP")"
+
+          echo "Found: $ZIP_NAME"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Extract ZIP
+        shell: bash
         run: |
-          ZIP="${{ steps.find_zip.outputs.zip }}"
+          set -e
 
+          rm -rf _extracted
           mkdir -p _extracted
-          unzip -o "$ZIP" -d _extracted
 
-          echo "ZIP extracted."
+          unzip -q "${{ steps.zip.outputs.zip }}" -d _extracted
 
-      - name: Find project root
+          echo "ZIP extracted:"
+          find _extracted -maxdepth 3 -type f | sort
+
+      - name: Detect project directory
+        id: project
+        shell: bash
         run: |
-          if [ -f "_extracted/settings.gradle.kts" ]; then
-            echo "Project is directly inside ZIP."
-            exit 0
-          fi
+          set -e
 
-          PROJECT=$(find _extracted -type f -name "settings.gradle.kts" -print -quit)
+          SETTINGS="$(find _extracted -type f -name 'settings.gradle.kts' -print -quit)"
 
-          if [ -z "$PROJECT" ]; then
-            echo "ERROR: settings.gradle.kts not found."
-            echo "ZIP does not appear to contain a valid Android project."
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle.kts was not found!"
+            echo "The ZIP does not contain a valid Android project."
             exit 1
           fi
 
-          ROOT=$(dirname "$PROJECT")
+          PROJECT_DIR="$(dirname "$SETTINGS")"
 
-          echo "Project root: $ROOT"
+          echo "Android project found:"
+          echo "$PROJECT_DIR"
 
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare project
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf _project
           mkdir -p _project
-          cp -a "$ROOT"/. _project/
 
-          rm -rf _extracted
-          mv _project _extracted
-
-      - name: Copy project into repository
-        run: |
-          ZIP="${{ steps.find_zip.outputs.zip }}"
-
-          # Remove everything except the ZIP and .git metadata.
-          find . -mindepth 1 -maxdepth 1 \
-            ! -name ".git" \
-            ! -name "$(basename "$ZIP")" \
-            -exec rm -rf {} +
-
-          # Copy extracted project.
-          cp -a _extracted/. .
-
-          rm -rf _extracted
-
-          echo "Project copied successfully."
-
-      - name: Remove ZIP
-        run: |
-          rm -f "${{ steps.find_zip.outputs.zip }}"
-
-      - name: Show files
-        run: |
-          echo "Final repository:"
-          find . -maxdepth 3 -type f \
-            ! -path "./.git/*" | sort
-
-      - name: Commit changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add -A
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          git commit -m "Unpack RudoLinux project"
-          git push
+          PROJECT_DIR="${{ steps.project
