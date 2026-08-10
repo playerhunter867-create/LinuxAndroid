@@ -1,0 +1,104 @@
+name: Unpack RudoLinux ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP
+        id: find_zip
+        run: |
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: ZIP file not found in repository root."
+            exit 1
+          fi
+
+          echo "ZIP found: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Extract ZIP
+        run: |
+          ZIP="${{ steps.find_zip.outputs.zip }}"
+
+          mkdir -p _extracted
+          unzip -o "$ZIP" -d _extracted
+
+          echo "ZIP extracted."
+
+      - name: Find project root
+        run: |
+          if [ -f "_extracted/settings.gradle.kts" ]; then
+            echo "Project is directly inside ZIP."
+            exit 0
+          fi
+
+          PROJECT=$(find _extracted -type f -name "settings.gradle.kts" -print -quit)
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: settings.gradle.kts not found."
+            echo "ZIP does not appear to contain a valid Android project."
+            exit 1
+          fi
+
+          ROOT=$(dirname "$PROJECT")
+
+          echo "Project root: $ROOT"
+
+          mkdir -p _project
+          cp -a "$ROOT"/. _project/
+
+          rm -rf _extracted
+          mv _project _extracted
+
+      - name: Copy project into repository
+        run: |
+          ZIP="${{ steps.find_zip.outputs.zip }}"
+
+          # Remove everything except the ZIP and .git metadata.
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name ".git" \
+            ! -name "$(basename "$ZIP")" \
+            -exec rm -rf {} +
+
+          # Copy extracted project.
+          cp -a _extracted/. .
+
+          rm -rf _extracted
+
+          echo "Project copied successfully."
+
+      - name: Remove ZIP
+        run: |
+          rm -f "${{ steps.find_zip.outputs.zip }}"
+
+      - name: Show files
+        run: |
+          echo "Final repository:"
+          find . -maxdepth 3 -type f \
+            ! -path "./.git/*" | sort
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Unpack RudoLinux project"
+          git push
