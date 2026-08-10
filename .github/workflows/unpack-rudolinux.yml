@@ -13,58 +13,80 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Find ZIP
+        shell: bash
         run: |
           set -e
 
-          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          ZIP=$(find "$GITHUB_WORKSPACE" \
+            -maxdepth 1 \
+            -type f \
+            -iname "*.zip" \
+            -print -quit)
 
           if [ -z "$ZIP" ]; then
-            echo "ERROR: ZIP not found"
+            echo "ERROR: ZIP file not found"
             exit 1
           fi
 
-          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "Found: $ZIP"
+          echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
 
       - name: Extract ZIP
+        shell: bash
         run: |
           set -e
 
           rm -rf /tmp/rudolinux
           mkdir -p /tmp/rudolinux
 
-          unzip -q "$ZIP" -d /tmp/rudolinux
+          unzip -q "$ZIP_PATH" -d /tmp/rudolinux
 
-          echo "ZIP extracted"
+          echo "ZIP extracted."
 
-      - name: Find project
+      - name: Find Android project
+        shell: bash
         run: |
           set -e
 
           SETTINGS=$(find /tmp/rudolinux -type f \
-            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
-            | head -n 1)
+            \( \
+              -name "settings.gradle.kts" \
+              -o \
+              -name "settings.gradle" \
+            \) \
+            -print -quit)
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: Android project not found"
+            echo "ERROR: Android project not found."
+            echo "ZIP contents:"
+            find /tmp/rudolinux -maxdepth 5 -type f | sort
             exit 1
           fi
 
           PROJECT=$(dirname "$SETTINGS")
 
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-
-          echo "Project found:"
+          echo "Android project:"
           echo "$PROJECT"
 
-      - name: Copy Android project
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Copy Android files
+        shell: bash
         run: |
           set -e
 
-          # Удаляем только старые Android-файлы.
+          PROJECT="$PROJECT"
+
+          echo "Copying project..."
+
+          # Старые Android-файлы
           rm -rf app
           rm -rf gradle
+
           rm -f build.gradle.kts
           rm -f build.gradle
           rm -f settings.gradle.kts
@@ -73,65 +95,88 @@ jobs:
           rm -f gradlew
           rm -f gradlew.bat
 
-          # Копируем проект.
-          cp -r "$PROJECT/app" ./app
-
-          [ -d "$PROJECT/gradle" ] && cp -r "$PROJECT/gradle" ./gradle || true
-
-          [ -f "$PROJECT/build.gradle.kts" ] && cp "$PROJECT/build.gradle.kts" .
-          [ -f "$PROJECT/build.gradle" ] && cp "$PROJECT/build.gradle" .
-          [ -f "$PROJECT/settings.gradle.kts" ] && cp "$PROJECT/settings.gradle.kts" .
-          [ -f "$PROJECT/settings.gradle" ] && cp "$PROJECT/settings.gradle" .
-          [ -f "$PROJECT/gradle.properties" ] && cp "$PROJECT/gradle.properties" .
-          [ -f "$PROJECT/gradlew" ] && cp "$PROJECT/gradlew" .
-          [ -f "$PROJECT/gradlew.bat" ] && cp "$PROJECT/gradlew.bat" .
-
-          echo "Android project copied"
-
-      - name: Remove ZIP
-        run: |
-          rm -f "$ZIP"
-
-      - name: Verify
-        run: |
-          set -e
-
-          echo "Checking project..."
-
-          test -d app
-
-          if [ -f settings.gradle.kts ]; then
-            echo "settings.gradle.kts OK"
-          elif [ -f settings.gradle ]; then
-            echo "settings.gradle OK"
-          else
-            echo "ERROR: settings.gradle not found"
+          # app — обязательно
+          if [ ! -d "$PROJECT/app" ]; then
+            echo "ERROR: app directory not found in ZIP."
             exit 1
           fi
 
-          test -f app/build.gradle.kts || test -f app/build.gradle
+          cp -R "$PROJECT/app" ./app
+
+          # gradle — только если существует
+          if [ -d "$PROJECT/gradle" ]; then
+            cp -R "$PROJECT/gradle" ./gradle
+          fi
+
+          # Остальные файлы — только если существуют
+          for FILE in \
+            build.gradle.kts \
+            build.gradle \
+            settings.gradle.kts \
+            settings.gradle \
+            gradle.properties \
+            gradlew \
+            gradlew.bat
+          do
+            if [ -f "$PROJECT/$FILE" ]; then
+              cp "$PROJECT/$FILE" "./$FILE"
+            fi
+          done
+
+          echo "Project copied successfully."
+
+      - name: Remove ZIP
+        shell: bash
+        run: |
+          rm -f "$ZIP_PATH"
+
+      - name: Verify
+        shell: bash
+        run: |
+          set -e
+
+          echo "===== VERIFY ====="
+
+          if [ ! -d app ]; then
+            echo "ERROR: app/ missing"
+            exit 1
+          fi
+
+          if [ -f settings.gradle.kts ]; then
+            echo "settings.gradle.kts: OK"
+          elif [ -f settings.gradle ]; then
+            echo "settings.gradle: OK"
+          else
+            echo "ERROR: Gradle settings file missing"
+            exit 1
+          fi
+
+          if [ -f app/build.gradle.kts ]; then
+            echo "app/build.gradle.kts: OK"
+          elif [ -f app/build.gradle ]; then
+            echo "app/build.gradle: OK"
+          else
+            echo "ERROR: app Gradle file missing"
+            exit 1
+          fi
 
           echo ""
-          echo "RudoLinux:"
-          find app -maxdepth 5 -type f | sort
+          echo "Android project is ready."
 
-      - name: Commit Android project
+      - name: Commit changes
+        shell: bash
         run: |
           set -e
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add app
-          git add gradle
-          git add build.gradle.kts build.gradle
-          git add settings.gradle.kts settings.gradle
-          git add gradle.properties
-          git add gradlew gradlew.bat
-          git add -u
+          # Добавляем изменения.
+          # .github/workflows НЕ изменяется этим workflow.
+          git add -A
 
           if git diff --cached --quiet; then
-            echo "Nothing to commit"
+            echo "Nothing to commit."
             exit 0
           fi
 
