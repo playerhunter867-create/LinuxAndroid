@@ -10,8 +10,14 @@
         android:supportsRtl="true">
 
         <activity
+            android:name=".LinuxTerminalActivity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <activity
             android:name=".DistroManagerActivity"
-            android:screenOrientation="portrait" />
+            android:screenOrientation="portrait"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"
