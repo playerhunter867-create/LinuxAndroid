@@ -3,14 +3,16 @@ package com.rudolinux.app
 import android.app.Activity
 import android.os.Bundle
 import android.graphics.Color
+import android.graphics.Typeface
 import android.view.Gravity
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.EditText
 import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextView
 
 class MainActivity : Activity() {
+
     private lateinit var output: TextView
     private lateinit var input: EditText
 
@@ -31,12 +33,17 @@ class MainActivity : Activity() {
         }
 
         output = TextView(this).apply {
-            text = "RudoLinux — Linux-like Android environment\n\n" +
-                   "user@rudo:~$ help\n" +
-                   "Available: help, clear, uname, ls, pwd, whoami\n\n" +
-                   "user@rudo:~$ "
+            text = """
+                RudoLinux — Linux-like Android environment
+
+                user@rudo:~$ help
+                Available: help, clear, uname, ls, pwd, whoami
+
+                user@rudo:~$ 
+            """.trimIndent()
+
             textSize = 15f
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = Typeface.MONOSPACE
             setTextColor(Color.rgb(220, 230, 225))
         }
 
@@ -51,9 +58,9 @@ class MainActivity : Activity() {
 
         input = EditText(this).apply {
             hint = "command"
-            singleLine = true
+            setSingleLine(true)
             textSize = 15f
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = Typeface.MONOSPACE
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
             setBackgroundColor(Color.rgb(20, 25, 30))
@@ -61,14 +68,40 @@ class MainActivity : Activity() {
 
         val run = Button(this).apply {
             text = "RUN"
-            setOnClickListener { execute(input.text.toString()) }
+
+            setOnClickListener {
+                execute(input.text.toString())
+            }
         }
 
-        row.addView(input, LinearLayout.LayoutParams(0, 58, 1f))
-        row.addView(run, LinearLayout.LayoutParams(90, 58))
+        row.addView(
+            input,
+            LinearLayout.LayoutParams(
+                0,
+                58,
+                1f
+            )
+        )
+
+        row.addView(
+            run,
+            LinearLayout.LayoutParams(
+                90,
+                58
+            )
+        )
 
         root.addView(title)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        root.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                -1,
+                0,
+                1f
+            )
+        )
+
         root.addView(row)
 
         setContentView(root)
@@ -76,23 +109,46 @@ class MainActivity : Activity() {
 
     private fun execute(commandRaw: String) {
         val command = commandRaw.trim()
-        if (command.isEmpty()) return
+
+        if (command.isEmpty()) {
+            return
+        }
 
         val result = when (command) {
-            "help" -> "help  clear  uname  ls  pwd  whoami"
-            "uname" -> "RudoLinux Android"
-            "ls" -> "bin  dev  etc  home  tmp  usr  var"
-            "pwd" -> "/home/user"
-            "whoami" -> "user"
-            "clear" -> ""
-            else -> "command not found: $command"
+
+            "help" ->
+                "help  clear  uname  ls  pwd  whoami"
+
+            "uname" ->
+                "RudoLinux Android"
+
+            "ls" ->
+                "bin  dev  etc  home  tmp  usr  var"
+
+            "pwd" ->
+                "/home/user"
+
+            "whoami" ->
+                "user"
+
+            "clear" ->
+                ""
+
+            else ->
+                "command not found: $command"
         }
 
         if (command == "clear") {
+
             output.text = "user@rudo:~$ "
+
         } else {
-            output.append("$command\n$result\n\nuser@rudo:~$ ")
+
+            output.append(
+                "$command\n$result\n\nuser@rudo:~$ "
+            )
         }
+
         input.text.clear()
     }
 }
