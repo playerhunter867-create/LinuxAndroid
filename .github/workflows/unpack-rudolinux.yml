@@ -8,71 +8,119 @@ permissions:
 
 jobs:
   unpack:
+    name: Extract ZIP and commit project
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Find ZIP
-        id: zip
         shell: bash
         run: |
           set -e
-
-          ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
-
+          ZIP="$(find . -maxdepth 1 -type f -iname '*.zip' -print -quit)"
           if [ -z "$ZIP" ]; then
-            echo "ERROR: ZIP file not found!"
+            echo "ERROR: No ZIP file found in repository root."
             exit 1
           fi
-
-          ZIP_NAME="$(basename "$ZIP")"
-
-          echo "Found: $ZIP_NAME"
-          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
-          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "ZIP: $ZIP"
+          echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
 
       - name: Extract ZIP
         shell: bash
         run: |
           set -e
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "$ZIP_PATH" -d extracted
 
-          rm -rf _extracted
-          mkdir -p _extracted
+          echo "ZIP contents:"
+          find extracted -maxdepth 4 -type f | sort
 
-          unzip -q "${{ steps.zip.outputs.zip }}" -d _extracted
-
-          echo "ZIP extracted:"
-          find _extracted -maxdepth 3 -type f | sort
-
-      - name: Detect project directory
-        id: project
+      - name: Locate Android project
         shell: bash
         run: |
           set -e
 
-          SETTINGS="$(find _extracted -type f -name 'settings.gradle.kts' -print -quit)"
+          SETTINGS="$(find extracted -type f -name 'settings.gradle.kts' -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: settings.gradle.kts was not found!"
-            echo "The ZIP does not contain a valid Android project."
+            SETTINGS="$(find extracted -type f -name 'settings.gradle' -print -quit)"
+          fi
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Android project was not found."
+            echo "Expected settings.gradle.kts or settings.gradle inside the ZIP."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
+          echo "Project directory: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Android project found:"
-          echo "$PROJECT_DIR"
-
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare project
+      - name: Copy project
         shell: bash
         run: |
           set -e
 
-          rm -rf _project
-          mkdir -p _project
+          rm -rf project_to_copy
+          mkdir project_to_copy
 
-          PROJECT_DIR="${{ steps.project
+          cp -a "$PROJECT_DIR"/. project_to_copy/
+
+          echo "Project prepared:"
+          find project_to_copy -maxdepth 5 -type f | sort
+
+      - name: Clean repository
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_NAME="$(basename "$ZIP_PATH")"
+
+          find . -mindepth 1 -maxdepth 1             ! -name ".git"             ! -name "$ZIP_NAME"             -exec rm -rf {} +
+
+      - name: Install project
+        shell: bash
+        run: |
+          set -e
+
+          cp -a project_to_copy/. .
+
+          rm -rf project_to_copy
+          rm -rf extracted
+          rm -f "$ZIP_PATH"
+
+      - name: Verify
+        shell: bash
+        run: |
+          set -e
+
+          test -f settings.gradle.kts || test -f settings.gradle
+          test -d app
+
+          echo "SUCCESS!"
+          echo
+          echo "Repository:"
+          find . -maxdepth 4 -type f             ! -path "./.git/*" | sort
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Nothing changed."
+            exit 0
+          fi
+
+          git commit -m "Unpack RudoLinux project"
+          git push
