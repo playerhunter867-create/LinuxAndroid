@@ -28,11 +28,11 @@ jobs:
             -print -quit)"
 
           if [ -z "$ZIP" ]; then
-            echo "ERROR: ZIP not found in repository root."
+            echo "ERROR: ZIP not found."
             exit 1
           fi
 
-          echo "ZIP found: $ZIP"
+          echo "ZIP: $ZIP"
           echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
 
       - name: Extract ZIP
@@ -45,7 +45,7 @@ jobs:
 
           unzip -q "$ZIP_PATH" -d "$GITHUB_WORKSPACE/.unpack"
 
-      - name: Find project
+      - name: Find Android project
         shell: bash
         run: |
           set -euo pipefail
@@ -56,18 +56,19 @@ jobs:
             -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: Gradle settings file not found."
+            echo "ERROR: Android project not found."
+            find "$GITHUB_WORKSPACE/.unpack" -maxdepth 5 -type f
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
-          echo "Project found:"
-          echo "$PROJECT_DIR"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Copy project
+          echo "Project:"
+          echo "$PROJECT_DIR"
+
+      - name: Prepare project
         shell: bash
         run: |
           set -euo pipefail
@@ -78,12 +79,17 @@ jobs:
           tar -C "$PROJECT_DIR" -cf - . \
             | tar -C "$GITHUB_WORKSPACE/.project" -xf -
 
+          # IMPORTANT:
+          # Never copy workflows from the ZIP.
+          rm -rf "$GITHUB_WORKSPACE/.project/.github/workflows"
+
+          # Also remove any nested .github directory left by the ZIP.
+          rm -rf "$GITHUB_WORKSPACE/.project/.github"
+
       - name: Clean repository
         shell: bash
         run: |
           set -euo pipefail
-
-          ZIP_NAME="$(basename "$ZIP_PATH")"
 
           find "$GITHUB_WORKSPACE" \
             -mindepth 1 \
@@ -91,7 +97,6 @@ jobs:
             ! -name ".git" \
             ! -name ".project" \
             ! -name ".unpack" \
-            ! -name "$ZIP_NAME" \
             -exec rm -rf {} +
 
       - name: Install project
@@ -106,25 +111,111 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/.unpack"
           rm -f "$ZIP_PATH"
 
+      - name: Restore unpack workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/.github/workflows"
+
+          cat > "$GITHUB_WORKSPACE/.github/workflows/unpack-rudolinux.yml" <<'EOF'
+name: Unpack RudoLinux ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find ZIP
+        run: |
+          ZIP="$(find . -maxdepth 1 -type f -iname '*.zip' -print -quit)"
+          if [ -z "$ZIP" ]; then
+            echo "ZIP not found."
+            exit 1
+          fi
+          echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Extract
+        run: |
+          rm -rf .unpack
+          mkdir .unpack
+          unzip -q "$ZIP_PATH" -d .unpack
+
+      - name: Find project
+        run: |
+          SETTINGS="$(find .unpack -type f \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -print -quit)"
+          if [ -z "$SETTINGS" ]; then
+            echo "Android project not found."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$SETTINGS")" >> "$GITHUB_ENV"
+
+      - name: Install
+        run: |
+          rm -rf .project
+          mkdir .project
+
+          tar -C "$PROJECT_DIR" -cf - . \
+            | tar -C .project -xf -
+
+          rm -rf .project/.github
+
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name ".git" \
+            ! -name ".project" \
+            ! -name ".unpack" \
+            -exec rm -rf {} +
+
+          tar -C .project -cf - . \
+            | tar -C . -xf -
+
+          rm -rf .project .unpack
+          rm -f "$ZIP_PATH"
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Unpack RudoLinux project"
+          git push
+EOF
+
       - name: Verify
         shell: bash
         run: |
           set -euo pipefail
 
           test -d "$GITHUB_WORKSPACE/app"
+          test -f "$GITHUB_WORKSPACE/settings.gradle.kts"
 
-          if [ -f "$GITHUB_WORKSPACE/settings.gradle.kts" ]; then
-            echo "settings.gradle.kts OK"
-          elif [ -f "$GITHUB_WORKSPACE/settings.gradle" ]; then
-            echo "settings.gradle OK"
-          else
-            echo "ERROR: Gradle settings missing."
-            exit 1
+          # CRITICAL:
+          # build.yml must NOT come from the ZIP.
+          if [ -f "$GITHUB_WORKSPACE/.github/workflows/build.yml" ]; then
+            echo "ERROR: build.yml was copied from ZIP."
+            rm -f "$GITHUB_WORKSPACE/.github/workflows/build.yml"
           fi
 
-          echo "RudoLinux project installed successfully."
+          echo "RudoLinux project is ready."
 
-      - name: Commit
+      - name: Commit and push
         shell: bash
         run: |
           set -euo pipefail
