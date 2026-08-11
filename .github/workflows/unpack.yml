@@ -1,26 +1,3 @@
-name: Unpack ZIP into repository
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  unpack:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Find ZIP
-        run: |
-          echo "ZIP files:"
-          find . -maxdepth 2 -type f \( -name "*.zip" -o -name "*.ZIP" \) -print
-
       - name: Unpack ZIP
         shell: bash
         run: |
@@ -39,8 +16,6 @@ jobs:
           mkdir -p _unpack
           unzip -o "$ZIP" -d _unpack
 
-          # Если внутри ZIP есть единственная папка,
-          # берём её содержимое, а не создаём лишний уровень.
           shopt -s dotglob nullglob
           ITEMS=(_unpack/*)
 
@@ -51,31 +26,7 @@ jobs:
             cp -a _unpack/. .
           fi
 
+          # НЕ разрешаем ZIP менять GitHub Actions
+          git checkout -- .github/workflows 2>/dev/null || true
+
           rm -rf _unpack
-
-      - name: Remove ZIP
-        run: |
-          find . -maxdepth 2 -type f \( -name "*.zip" -o -name "*.ZIP" \) \
-            ! -path "./.git/*" -delete
-
-      - name: Show changed files
-        run: |
-          git status --short
-
-      - name: Commit changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add -A
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          git commit -m "Unpack ZIP into repository"
-
-      - name: Push changes
-        run: |
-          git push origin HEAD:main
