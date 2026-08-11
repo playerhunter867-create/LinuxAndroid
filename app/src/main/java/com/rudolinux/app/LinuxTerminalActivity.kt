@@ -1,11 +1,10 @@
-package org.linox.mobile
+package com.rudolinux.app
 
 import android.app.Activity
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
-import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -13,6 +12,15 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
+/**
+ * LinOx interactive Linux terminal.
+ *
+ * Uses:
+ *  - LinuxRuntime for PRoot/rootfs management
+ *  - PtySession for interactive process input/output
+ *
+ * No Android root is required.
+ */
 class LinuxTerminalActivity : Activity() {
 
     private lateinit var output: TextView
@@ -21,21 +29,14 @@ class LinuxTerminalActivity : Activity() {
 
     private var session: PtySession? = null
 
-    private var distroId: String = "debian12"
+    private lateinit var scroll: ScrollView
 
-    override fun onCreate(
-        savedInstanceState: Bundle?
-    ) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        distroId =
-            intent.getStringExtra("distro_id")
-                ?: "debian12"
+        runtime = LinuxRuntime(this)
 
-        runtime =
-            LinuxRuntime(this)
-
-        buildTerminalUi()
+        buildInterface()
 
         startLinux()
     }
@@ -44,394 +45,155 @@ class LinuxTerminalActivity : Activity() {
     // UI
     // -------------------------------------------------------------------------
 
-    private fun buildTerminalUi() {
+    private fun buildInterface() {
 
-        val root =
-            LinearLayout(this).apply {
-
-                orientation =
-                    LinearLayout.VERTICAL
-
-                setBackgroundColor(
-                    Color.rgb(
-                        7,
-                        10,
-                        13
-                    )
-                )
-
-                setPadding(
-                    12,
-                    12,
-                    12,
-                    8
-                )
-            }
-
-        val header =
-            LinearLayout(this).apply {
-
-                orientation =
-                    LinearLayout.HORIZONTAL
-
-                gravity =
-                    Gravity.CENTER_VERTICAL
-
-                setPadding(
-                    4,
-                    4,
-                    4,
-                    10
-                )
-            }
-
-        val title =
-            TextView(this).apply {
-
-                text =
-                    "LinOx Terminal"
-
-                textSize =
-                    19f
-
-                typeface =
-                    Typeface.DEFAULT_BOLD
-
-                setTextColor(
-                    Color.rgb(
-                        124,
-                        255,
-                        178
-                    )
-                )
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        0,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        1f
-                    )
-            }
-
-        val status =
-            TextView(this).apply {
-
-                text =
-                    "● OFFLINE"
-
-                textSize =
-                    12f
-
-                typeface =
-                    Typeface.MONOSPACE
-
-                setTextColor(
-                    Color.rgb(
-                        255,
-                        100,
-                        100
-                    )
-                )
-
-                tag =
-                    "terminal_status"
-            }
-
-        header.addView(title)
-        header.addView(status)
-
-        // ---------------------------------------------------------------------
-        // Terminal output
-        // ---------------------------------------------------------------------
-
-        val terminalScroll =
-            ScrollView(this).apply {
-
-                isFillViewport =
-                    true
-
-                setBackgroundColor(
-                    Color.rgb(
-                        3,
-                        5,
-                        7
-                    )
-                )
-
-                setPadding(
-                    8,
-                    8,
-                    8,
-                    8
-                )
-            }
-
-        output =
-            TextView(this).apply {
-
-                textSize =
-                    14f
-
-                typeface =
-                    Typeface.MONOSPACE
-
-                setTextColor(
-                    Color.rgb(
-                        220,
-                        230,
-                        225
-                    )
-                )
-
-                setTextIsSelectable(
-                    true
-                )
-
-                text =
-                    "LinOx Terminal\n" +
-                    "-------------------------\n"
-
-                setPadding(
-                    4,
-                    4,
-                    4,
-                    16
-                )
-            }
-
-        terminalScroll.addView(
-            output,
-            ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(
+                Color.rgb(8, 11, 14)
             )
-        )
-
-        // ---------------------------------------------------------------------
-        // Command input
-        // ---------------------------------------------------------------------
-
-        val commandRow =
-            LinearLayout(this).apply {
-
-                orientation =
-                    LinearLayout.HORIZONTAL
-
-                gravity =
-                    Gravity.CENTER_VERTICAL
-
-                setPadding(
-                    0,
-                    8,
-                    0,
-                    0
-                )
-            }
-
-        input =
-            EditText(this).apply {
-
-                hint =
-                    "Enter command..."
-
-                setSingleLine(
-                    true
-                )
-
-                textSize =
-                    14f
-
-                typeface =
-                    Typeface.MONOSPACE
-
-                setTextColor(
-                    Color.WHITE
-                )
-
-                setHintTextColor(
-                    Color.GRAY
-                )
-
-                setBackgroundColor(
-                    Color.rgb(
-                        20,
-                        24,
-                        28
-                    )
-                )
-
-                setPadding(
-                    12,
-                    0,
-                    12,
-                    0
-
-                )
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        0,
-                        56,
-                        1f
-                    )
-            }
-
-        val runButton =
-            Button(this).apply {
-
-                text =
-                    "RUN"
-
-                isAllCaps =
-                    false
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        90,
-                        56
-                    ).apply {
-
-                        leftMargin =
-                            8
-                    }
-
-                setOnClickListener {
-                    sendCommand()
-                }
-            }
-
-        input.setOnEditorActionListener { _, _, _ ->
-
-            sendCommand()
-
-            true
+            setPadding(
+                12,
+                12,
+                12,
+                8
+            )
         }
 
-        commandRow.addView(
-            input
-        )
+        val title = TextView(this).apply {
+            text = "LinOx Linux Terminal"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(
+                Color.rgb(124, 255, 178)
+            )
+            setPadding(
+                4,
+                4,
+                4,
+                12
+            )
+        }
 
-        commandRow.addView(
-            runButton
-        )
+        output = TextView(this).apply {
+            textSize = 14f
+            typeface = Typeface.MONOSPACE
 
-        // ---------------------------------------------------------------------
-        // Control buttons
-        // ---------------------------------------------------------------------
+            setTextColor(
+                Color.rgb(220, 230, 225)
+            )
 
-        val controls =
-            LinearLayout(this).apply {
+            setBackgroundColor(
+                Color.rgb(5, 7, 9)
+            )
 
-                orientation =
-                    LinearLayout.HORIZONTAL
+            text =
+                "LinOx Linux Terminal\n" +
+                "--------------------\n"
+        }
 
-                gravity =
-                    Gravity.CENTER_VERTICAL
+        scroll = ScrollView(this).apply {
+            isFillViewport = true
 
-                setPadding(
-                    0,
-                    8,
-                    0,
-                    0
+            addView(
+                output,
+                ScrollView.LayoutParams(
+                    ScrollView.LayoutParams.MATCH_PARENT,
+                    ScrollView.LayoutParams.WRAP_CONTENT
                 )
+            )
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(
+                0,
+                8,
+                0,
+                0
+            )
+        }
+
+        input = EditText(this).apply {
+            hint = "command"
+            setSingleLine(true)
+
+            textSize = 14f
+            typeface = Typeface.MONOSPACE
+
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+
+            setBackgroundColor(
+                Color.rgb(18, 22, 25)
+            )
+
+            setPadding(
+                12,
+                0,
+                12,
+                0
+            )
+
+            setOnEditorActionListener { _, _, _ ->
+                sendCommand()
+                true
             }
+        }
 
-        val clearButton =
-            Button(this).apply {
+        val runButton = Button(this).apply {
+            text = "RUN"
 
-                text =
-                    "CLEAR"
-
-                isAllCaps =
-                    false
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        0,
-                        52,
-                        1f
-                    ).apply {
-
-                        rightMargin =
-                            4
-                    }
-
-                setOnClickListener {
-                    clearTerminal()
-                }
+            setOnClickListener {
+                sendCommand()
             }
+        }
 
-        val stopButton =
-            Button(this).apply {
+        val stopButton = Button(this).apply {
+            text = "STOP"
 
-                text =
-                    "STOP"
-
-                isAllCaps =
-                    false
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        0,
-                        52,
-                        1f
-                    ).apply {
-
-                        leftMargin =
-                            4
-
-                        rightMargin =
-                            4
-                    }
-
-                setOnClickListener {
-                    stopLinux()
-                }
+            setOnClickListener {
+                stopSession()
             }
+        }
 
-        val restartButton =
-            Button(this).apply {
+        val inputParams =
+            LinearLayout.LayoutParams(
+                0,
+                58,
+                1f
+            )
 
-                text =
-                    "RESTART"
+        val runParams =
+            LinearLayout.LayoutParams(
+                85,
+                58
+            )
 
-                isAllCaps =
-                    false
+        val stopParams =
+            LinearLayout.LayoutParams(
+                90,
+                58
+            )
 
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        0,
-                        52,
-                        1f
-                    ).apply {
-
-                        leftMargin =
-                            4
-                    }
-
-                setOnClickListener {
-                    restartLinux()
-                }
-            }
-
-        controls.addView(
-            clearButton
+        row.addView(
+            input,
+            inputParams
         )
 
-        controls.addView(
-            stopButton
+        row.addView(
+            runButton,
+            runParams
         )
 
-        controls.addView(
-            restartButton
+        row.addView(
+            stopButton,
+            stopParams
         )
-
-        // ---------------------------------------------------------------------
-        // Assemble UI
-        // ---------------------------------------------------------------------
 
         root.addView(
-            header,
+            title,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -439,7 +201,7 @@ class LinuxTerminalActivity : Activity() {
         )
 
         root.addView(
-            terminalScroll,
+            scroll,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -448,15 +210,7 @@ class LinuxTerminalActivity : Activity() {
         )
 
         root.addView(
-            commandRow,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        root.addView(
-            controls,
+            row,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -472,51 +226,54 @@ class LinuxTerminalActivity : Activity() {
 
     private fun startLinux() {
 
-        appendOutput(
-            "\n[LinOx] Starting Linux...\n"
-        )
+        val distroId =
+            intent.getStringExtra(
+                "distro_id"
+            ) ?: "debian12"
 
         appendOutput(
-            "[LinOx] Distribution: $distroId\n"
+            "\n[LinOx] Selected distribution: $distroId\n"
         )
 
         try {
 
-            if (
-                !runtime.activateInstalledDistro(
-                    distroId
-                )
-            ) {
+            /*
+             * LinuxRuntime in the current implementation uses the active
+             * rootfs directly. We therefore make sure the runtime is ready
+             * before starting the interactive process.
+             */
 
-                throw IllegalStateException(
-                    "Linux distribution '$distroId' " +
-                    "is not installed or its RootFS is incomplete."
+            if (!runtime.isLinuxReady()) {
+
+                appendOutput(
+                    "[ERROR] Linux userspace is not ready.\n"
                 )
+
+                appendOutput(
+                    runtime.status() + "\n"
+                )
+
+                appendOutput(
+                    "\nInstall an ARM64 PRoot and Linux ARM64 RootFS first.\n"
+                )
+
+                return
             }
 
             appendOutput(
-                "[OK] RootFS activated\n"
+                "[OK] Linux userspace detected.\n"
             )
 
             appendOutput(
-                "[LinOx] Checking PRoot...\n"
-            )
-
-            if (
-                !runtime.hasProot()
-            ) {
-
-                throw IllegalStateException(
-                    "PRoot is not installed."
-                )
-            }
-
-            appendOutput(
-                "[OK] PRoot available\n"
+                "[OK] PRoot: ${runtime.prootPath().absolutePath}\n"
             )
 
             appendOutput(
-                "[LinOx] Starting shell...\n\n"
+                "[OK] RootFS: ${runtime.rootfsPath().absolutePath}\n"
+            )
+
+            appendOutput(
+                "[LinOx] Starting PRoot...\n\n"
             )
 
             session =
@@ -527,15 +284,12 @@ class LinuxTerminalActivity : Activity() {
                         appendOutput(
                             text
                         )
+
                     }
                 }
 
-            updateStatus(
-                true
-            )
-
             appendOutput(
-                "\n[OK] Linux shell started.\n"
+                "✓ PRoot started\n\n"
             )
 
             appendOutput(
@@ -551,35 +305,29 @@ class LinuxTerminalActivity : Activity() {
             )
 
             appendOutput(
-                "  linox-info\n\n"
+                "  linox-info\n"
+            )
+
+            appendOutput(
+                "  linox-doctor\n\n"
             )
 
         } catch (error: Exception) {
 
-            updateStatus(
-                false
-            )
-
             appendOutput(
-                "\n[ERROR] Linux failed to start\n"
-            )
-
-            appendOutput(
-                "${error.javaClass.simpleName}: " +
-                "${error.message}\n"
+                "\n[ERROR] ${error.message ?: error.javaClass.simpleName}\n"
             )
 
             Toast.makeText(
                 this,
-                error.message
-                    ?: "Linux runtime error",
+                error.message ?: "Linux runtime error",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
 
     // -------------------------------------------------------------------------
-    // SEND COMMAND
+    // COMMAND INPUT
     // -------------------------------------------------------------------------
 
     private fun sendCommand() {
@@ -589,9 +337,7 @@ class LinuxTerminalActivity : Activity() {
                 .toString()
                 .trim()
 
-        if (
-            command.isEmpty()
-        ) {
+        if (command.isEmpty()) {
             return
         }
 
@@ -599,94 +345,26 @@ class LinuxTerminalActivity : Activity() {
             session
 
         if (
-            currentSession == null
+            currentSession == null ||
+            !currentSession.isAlive()
         ) {
 
             appendOutput(
-                "\n[ERROR] Linux shell is not running.\n"
+                "\n[LinOx] Terminal session is not running.\n"
             )
 
             return
         }
 
         appendOutput(
-            "\n$command\n"
+            "$command\n"
         )
 
-        try {
-
-            currentSession.send(
-                command
-            )
-
-            input.text.clear()
-
-        } catch (error: Exception) {
-
-            appendOutput(
-                "\n[ERROR] " +
-                "${error.message}\n"
-            )
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // STOP
-    // -------------------------------------------------------------------------
-
-    private fun stopLinux() {
-
-        val currentSession =
-            session
-
-        session = null
-
-        if (
-            currentSession != null
-        ) {
-
-            runCatching {
-                currentSession.stop()
-            }
-        }
-
-        updateStatus(
-            false
+        currentSession.send(
+            command
         )
 
-        appendOutput(
-            "\n\n[LinOx] Shell stopped.\n"
-        )
-    }
-
-    // -------------------------------------------------------------------------
-    // RESTART
-    // -------------------------------------------------------------------------
-
-    private fun restartLinux() {
-
-        stopLinux()
-
-        appendOutput(
-            "\n[LinOx] Restarting...\n"
-        )
-
-        startLinux()
-    }
-
-    // -------------------------------------------------------------------------
-    // CLEAR
-    // -------------------------------------------------------------------------
-
-    private fun clearTerminal() {
-
-        output.text =
-            ""
-
-        appendOutput(
-            "LinOx Terminal\n" +
-            "-------------------------\n"
-        )
+        input.text.clear()
     }
 
     // -------------------------------------------------------------------------
@@ -697,94 +375,51 @@ class LinuxTerminalActivity : Activity() {
         text: String
     ) {
 
-        if (
-            !::output.isInitialized
-        ) {
+        if (!::output.isInitialized) {
             return
         }
 
-        output.append(
-            text
-        )
+        runOnUiThread {
 
-        output.post {
-            val parent =
-                output.parent
-
-            if (
-                parent is ScrollView
-            ) {
-
-                parent.fullScroll(
-                    ScrollView.FOCUS_DOWN
-                )
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // STATUS
-    // -------------------------------------------------------------------------
-
-    private fun updateStatus(
-        running: Boolean
-    ) {
-
-        val root =
-            window.decorView
-
-        val status =
-            root.findViewWithTag<TextView>(
-                "terminal_status"
+            output.append(
+                text
             )
 
-        if (
-            status != null
-        ) {
+            if (::scroll.isInitialized) {
 
-            if (running) {
-
-                status.text =
-                    "● ONLINE"
-
-                status.setTextColor(
-                    Color.rgb(
-                        124,
-                        255,
-                        178
+                scroll.post {
+                    scroll.fullScroll(
+                        ScrollView.FOCUS_DOWN
                     )
-                )
-
-            } else {
-
-                status.text =
-                    "● OFFLINE"
-
-                status.setTextColor(
-                    Color.rgb(
-                        255,
-                        100,
-                        100
-                    )
-                )
+                }
             }
         }
     }
 
     // -------------------------------------------------------------------------
-    // ACTIVITY LIFECYCLE
+    // STOP
+    // -------------------------------------------------------------------------
+
+    private fun stopSession() {
+
+        session?.stop()
+
+        session = null
+
+        appendOutput(
+            "\n\n[LinOx] Terminal stopped.\n"
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // LIFECYCLE
     // -------------------------------------------------------------------------
 
     override fun onDestroy() {
 
-        session?.let {
-            runCatching {
-                it.stop()
-            }
-        }
+        session?.stop()
 
-        session =
-            null
+        session = null
 
         super.onDestroy()
     }
