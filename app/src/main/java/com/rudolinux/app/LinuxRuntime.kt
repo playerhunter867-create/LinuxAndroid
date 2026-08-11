@@ -19,7 +19,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
  * LinOx rootless Linux runtime.
  *
  * Android remains the host kernel.
- * PRoot provides the Linux userspace/rootfs view.
+ * PRoot provides the Linux userspace/rootfs environment.
  *
  * No Android root is required.
  */
@@ -27,46 +27,23 @@ class LinuxRuntime(
     private val context: Context
 ) {
 
-    // -------------------------------------------------------------------------
-    // PATHS
-    // -------------------------------------------------------------------------
-
     private val runtimeDir =
-        File(
-            context.filesDir,
-            "linox-runtime"
-        )
+        File(context.filesDir, "linox-runtime")
 
     private val proot =
-        File(
-            runtimeDir,
-            "proot"
-        )
+        File(runtimeDir, "proot")
 
     private val rootfs =
-        File(
-            runtimeDir,
-            "rootfs"
-        )
+        File(runtimeDir, "rootfs")
 
     private val home =
-        File(
-            runtimeDir,
-            "home"
-        )
+        File(runtimeDir, "home")
 
     private val tmp =
-        File(
-            runtimeDir,
-            "tmp"
-        )
+        File(runtimeDir, "tmp")
 
     private var activeRootfsFile: File =
         rootfs
-
-    // -------------------------------------------------------------------------
-    // INITIALIZATION
-    // -------------------------------------------------------------------------
 
     init {
         installLayout()
@@ -79,7 +56,6 @@ class LinuxRuntime(
     // -------------------------------------------------------------------------
 
     private fun installLayout(): File {
-
         runtimeDir.mkdirs()
         rootfs.mkdirs()
         home.mkdirs()
@@ -115,9 +91,7 @@ class LinuxRuntime(
             candidate.isDirectory &&
             isAllowedRootfsPath(candidate)
         ) {
-
-            activeRootfsFile =
-                candidate
+            activeRootfsFile = candidate
         }
     }
 
@@ -186,110 +160,6 @@ class LinuxRuntime(
         proot
 
     // -------------------------------------------------------------------------
-    // DISTRIBUTION ACTIVATION
-    // -------------------------------------------------------------------------
-
-    /**
-     * Activates an installed distribution.
-     *
-     * Supported layouts:
-     *
-     * files/linox-distros/debian12/
-     *
-     * or
-     *
-     * files/linox-distros/debian12/rootfs/
-     */
-    fun activateInstalledDistro(
-        distroId: String
-    ): Boolean {
-
-        if (distroId.isBlank()) {
-            return false
-        }
-
-        val distrosDir =
-            File(
-                context.filesDir,
-                "linox-distros"
-            )
-
-        if (!distrosDir.isDirectory) {
-            return false
-        }
-
-        val candidates =
-            listOf(
-                File(
-                    distrosDir,
-                    distroId
-                ),
-                File(
-                    distrosDir,
-                    "$distroId/rootfs"
-                ),
-                File(
-                    distrosDir,
-                    "$distroId/rootfs/"
-                )
-            )
-
-        val candidate =
-            candidates
-                .mapNotNull { file ->
-
-                    runCatching {
-                        file.canonicalFile
-                    }.getOrNull()
-                }
-                .firstOrNull { directory ->
-
-                    directory.isDirectory &&
-                        isAllowedRootfsPath(
-                            directory
-                        ) &&
-                        (
-                            File(
-                                directory,
-                                "bin/sh"
-                            ).isFile ||
-                                File(
-                                    directory,
-                                    "usr/bin/sh"
-                                ).isFile
-                        ) &&
-                        File(
-                            directory,
-                            "etc"
-                        ).isDirectory
-                }
-
-        if (candidate == null) {
-            return false
-        }
-
-        activeRootfsFile =
-            candidate
-
-        context
-            .getSharedPreferences(
-                "linox",
-                Context.MODE_PRIVATE
-            )
-            .edit()
-            .putString(
-                "active_rootfs",
-                candidate.absolutePath
-            )
-            .apply()
-
-        prepareNetworking()
-        installLinOxCommands()
-
-        return true
-    }
-
-    // -------------------------------------------------------------------------
     // ROOTFS SELECTION
     // -------------------------------------------------------------------------
 
@@ -301,9 +171,7 @@ class LinuxRuntime(
             path.canonicalFile
 
         require(
-            isAllowedRootfsPath(
-                canonical
-            )
+            isAllowedRootfsPath(canonical)
         ) {
             "Rootfs must live inside LinOx app storage"
         }
@@ -327,15 +195,6 @@ class LinuxRuntime(
             "Rootfs has no usable /bin/sh or /usr/bin/sh"
         }
 
-        require(
-            File(
-                canonical,
-                "etc"
-            ).isDirectory
-        ) {
-            "Rootfs has no /etc directory"
-        }
-
         activeRootfsFile =
             canonical
 
@@ -353,6 +212,66 @@ class LinuxRuntime(
 
         prepareNetworking()
         installLinOxCommands()
+    }
+
+    /**
+     * Compatibility method used by LinuxTerminalActivity.
+     *
+     * The distro id is currently used by DistroManager outside this runtime.
+     * The runtime verifies that the currently active rootfs is usable.
+     */
+    fun activateInstalledDistro(
+        distroId: String
+    ): Boolean {
+
+        val candidateDirectories =
+            listOf(
+                File(
+                    context.filesDir,
+                    "linox-distros/$distroId/rootfs"
+                ),
+                File(
+                    context.filesDir,
+                    "linox-distros/$distroId"
+                ),
+                File(
+                    runtimeDir,
+                    "distros/$distroId/rootfs"
+                ),
+                File(
+                    runtimeDir,
+                    "distros/$distroId"
+                )
+            )
+
+        val candidate =
+            candidateDirectories.firstOrNull { directory ->
+
+                directory.isDirectory &&
+                    isUsableRootfs(directory)
+            }
+
+        if (candidate != null) {
+
+            activateRootfs(candidate)
+
+            return true
+        }
+
+        if (
+            isUsableRootfs(rootfs)
+        ) {
+
+            activeRootfsFile =
+                rootfs.canonicalFile
+
+            prepareNetworking()
+            installLinOxCommands()
+
+            return true
+        }
+
+        return false
     }
 
     fun resetToDefaultRootfs() {
@@ -378,19 +297,17 @@ class LinuxRuntime(
         source: Uri
     ) {
 
-        val input =
+        val input: InputStream =
             requireNotNull(
-                context.contentResolver
-                    .openInputStream(source)
+                context.contentResolver.openInputStream(
+                    source
+                )
             ) {
                 "Unable to open PRoot binary"
             }
 
         input.use { stream ->
-
-            installProotStream(
-                stream
-            )
+            installProotStream(stream)
         }
     }
 
@@ -407,10 +324,7 @@ class LinuxRuntime(
                     "proot-aarch64-static"
                 )
                 .use { input ->
-
-                    installProotStream(
-                        input
-                    )
+                    installProotStream(input)
                 }
         }
     }
@@ -434,10 +348,7 @@ class LinuxRuntime(
         FileOutputStream(
             staging
         ).use { output ->
-
-            input.copyTo(
-                output
-            )
+            input.copyTo(output)
         }
 
         require(
@@ -498,7 +409,6 @@ class LinuxRuntime(
         ) {
 
             process.destroyForcibly()
-
             staging.delete()
 
             throw IllegalStateException(
@@ -509,8 +419,7 @@ class LinuxRuntime(
         val output =
             runCatching {
 
-                process
-                    .inputStream
+                process.inputStream
                     .bufferedReader()
                     .use { reader ->
                         reader.readText()
@@ -527,9 +436,7 @@ class LinuxRuntime(
 
             throw IllegalStateException(
                 "PRoot validation failed" +
-                    if (
-                        output.isNotEmpty()
-                    ) {
+                    if (output.isNotEmpty()) {
                         ": $output"
                     } else {
                         ""
@@ -587,10 +494,11 @@ class LinuxRuntime(
 
         try {
 
-            val raw =
+            val raw: InputStream =
                 requireNotNull(
-                    context.contentResolver
-                        .openInputStream(source)
+                    context.contentResolver.openInputStream(
+                        source
+                    )
                 ) {
                     "Unable to open rootfs archive"
                 }
@@ -605,15 +513,13 @@ class LinuxRuntime(
                         gzip
                     ).use { tar ->
 
-                        var entry =
+                        var entry:
+                            TarArchiveEntry? =
                             tar.nextTarEntry
 
-                        var count =
-                            0
+                        var count = 0
 
-                        while (
-                            entry != null
-                        ) {
+                        while (entry != null) {
 
                             val current =
                                 entry
@@ -624,9 +530,7 @@ class LinuxRuntime(
                                     current.name
                                 )
 
-                            if (
-                                name.isEmpty()
-                            ) {
+                            if (name.isEmpty()) {
 
                                 entry =
                                     tar.nextTarEntry
@@ -658,14 +562,16 @@ class LinuxRuntime(
                                         target
                                     )
 
-                                    target.parentFile
-                                        ?.mkdirs()
+                                    target.parentFile?.mkdirs()
 
                                     symlinks +=
                                         PendingSymlink(
-                                            target,
-                                            current.linkName,
-                                            name
+                                            target =
+                                                target,
+                                            linkName =
+                                                current.linkName,
+                                            entryName =
+                                                name
                                         )
                                 }
 
@@ -675,14 +581,16 @@ class LinuxRuntime(
                                         target
                                     )
 
-                                    target.parentFile
-                                        ?.mkdirs()
+                                    target.parentFile?.mkdirs()
 
                                     hardlinks +=
                                         PendingHardlink(
-                                            target,
-                                            current.linkName,
-                                            name
+                                            target =
+                                                target,
+                                            linkName =
+                                                current.linkName,
+                                            entryName =
+                                                name
                                         )
                                 }
 
@@ -692,16 +600,12 @@ class LinuxRuntime(
                                         target
                                     )
 
-                                    target.parentFile
-                                        ?.mkdirs()
+                                    target.parentFile?.mkdirs()
 
                                     FileOutputStream(
                                         target
                                     ).use { output ->
-
-                                        tar.copyTo(
-                                            output
-                                        )
+                                        tar.copyTo(output)
                                     }
 
                                     applyMode(
@@ -711,9 +615,8 @@ class LinuxRuntime(
                                 }
 
                                 else -> {
-                                    // Device files,
-                                    // FIFOs and other special
-                                    // entries are intentionally skipped.
+                                    // Special device/FIFO entries
+                                    // are intentionally skipped.
                                 }
                             }
 
@@ -818,6 +721,27 @@ class LinuxRuntime(
         }
 
         require(
+            isUsableRootfs(directory)
+        ) {
+            "Invalid rootfs: no /bin/sh or /usr/bin/sh"
+        }
+    }
+
+    private fun isUsableRootfs(
+        directory: File
+    ): Boolean {
+
+        if (!directory.isDirectory) {
+            return false
+        }
+
+        val hasEtc =
+            File(
+                directory,
+                "etc"
+            ).isDirectory
+
+        val hasShell =
             File(
                 directory,
                 "bin/sh"
@@ -826,9 +750,8 @@ class LinuxRuntime(
                     directory,
                     "usr/bin/sh"
                 ).isFile
-        ) {
-            "Invalid rootfs: no /bin/sh or /usr/bin/sh"
-        }
+
+        return hasEtc && hasShell
     }
 
     // -------------------------------------------------------------------------
@@ -858,8 +781,7 @@ class LinuxRuntime(
                     link.target
                 )
 
-                link.target.parentFile
-                    ?.mkdirs()
+                link.target.parentFile?.mkdirs()
 
                 copyFileOrDirectory(
                     source,
@@ -894,8 +816,7 @@ class LinuxRuntime(
                     continue
                 }
 
-                link.target.parentFile
-                    ?.mkdirs()
+                link.target.parentFile?.mkdirs()
 
                 val resolved =
                     resolveLinkTarget(
@@ -946,12 +867,9 @@ class LinuxRuntime(
             "Empty symbolic link target"
         }
 
-        deleteAny(
-            target
-        )
+        deleteAny(target)
 
-        target.parentFile
-            ?.mkdirs()
+        target.parentFile?.mkdirs()
 
         Files.createSymbolicLink(
             target.toPath(),
@@ -972,20 +890,15 @@ class LinuxRuntime(
         return runCatching {
 
             val raw =
-                Paths.get(
-                    linkName
-                )
+                Paths.get(linkName)
 
             val resolved: Path =
-                if (
-                    raw.isAbsolute
-                ) {
+                if (raw.isAbsolute) {
 
-                    base.toPath()
-                        .resolve(
-                            raw.toString()
-                                .removePrefix("/")
-                        )
+                    base.toPath().resolve(
+                        raw.toString()
+                            .removePrefix("/")
+                    )
 
                 } else {
 
@@ -1031,9 +944,7 @@ class LinuxRuntime(
         destination: File
     ) {
 
-        if (
-            source.isDirectory
-        ) {
+        if (source.isDirectory) {
 
             destination.mkdirs()
 
@@ -1052,12 +963,9 @@ class LinuxRuntime(
             return
         }
 
-        if (
-            source.isFile
-        ) {
+        if (source.isFile) {
 
-            destination.parentFile
-                ?.mkdirs()
+            destination.parentFile?.mkdirs()
 
             source.inputStream().use { input ->
 
@@ -1065,9 +973,7 @@ class LinuxRuntime(
                     destination
                 ).use { output ->
 
-                    input.copyTo(
-                        output
-                    )
+                    input.copyTo(output)
                 }
             }
 
@@ -1094,9 +1000,7 @@ class LinuxRuntime(
 
     fun prepareNetworking() {
 
-        if (
-            !activeRootfsFile.isDirectory
-        ) {
+        if (!activeRootfsFile.isDirectory) {
             return
         }
 
@@ -1128,9 +1032,7 @@ class LinuxRuntime(
                 .distinct()
 
         val servers =
-            if (
-                dns.isNotEmpty()
-            ) {
+            if (dns.isNotEmpty()) {
                 dns
             } else {
                 listOf(
@@ -1161,8 +1063,8 @@ class LinuxRuntime(
             resolv.writeText(
                 servers.joinToString(
                     separator = "\n"
-                ) { server ->
-                    "nameserver $server"
+                ) {
+                    "nameserver $it"
                 } + "\n"
             )
         }
@@ -1183,9 +1085,7 @@ class LinuxRuntime(
         packageManager: String
     ) {
 
-        check(
-            isLinuxReady()
-        ) {
+        check(isLinuxReady()) {
             "Linux rootfs is not ready"
         }
 
@@ -1240,9 +1140,7 @@ class LinuxRuntime(
         ) {
             "Developer tools installation failed " +
                 "(exit ${result.exitCode}): " +
-                result.output.takeLast(
-                    4000
-                )
+                result.output.takeLast(4000)
         }
 
         execute(
@@ -1276,9 +1174,7 @@ class LinuxRuntime(
 
     fun installLinOxCommands() {
 
-        if (
-            !activeRootfsFile.isDirectory
-        ) {
+        if (!activeRootfsFile.isDirectory) {
             return
         }
 
@@ -1299,11 +1195,11 @@ class LinuxRuntime(
                 """
                 #!/bin/sh
                 echo "LinOx Mobile"
-                echo "Userspace: $(cat /etc/os-release 2>/dev/null | sed -n '1p' || echo Linux)"
-                echo "Architecture: $(uname -m)"
-                echo "Host kernel: $(uname -sr)"
-                echo "Python: $(python --version 2>&1 || python3 --version 2>&1 || echo not-installed)"
-                echo "Git: $(git --version 2>/dev/null || echo not-installed)"
+                echo "Userspace: ${'$'}(cat /etc/os-release 2>/dev/null | sed -n '1p' || echo Linux)"
+                echo "Architecture: ${'$'}(uname -m)"
+                echo "Host kernel: ${'$'}(uname -sr)"
+                echo "Python: ${'$'}(python --version 2>&1 || python3 --version 2>&1 || echo not-installed)"
+                echo "Git: ${'$'}(git --version 2>/dev/null || echo not-installed)"
                 """.trimIndent() + "\n"
             )
 
@@ -1321,6 +1217,7 @@ class LinuxRuntime(
             writeText(
                 """
                 #!/bin/sh
+
                 ok=0
 
                 if command -v sh >/dev/null 2>&1; then
@@ -1349,8 +1246,8 @@ class LinuxRuntime(
                     echo "[WARN] /etc/resolv.conf missing"
                 fi
 
-                echo "Kernel: $(uname -sr)"
-                echo "Arch: $(uname -m)"
+                echo "Kernel: ${'$'}(uname -sr)"
+                echo "Arch: ${'$'}(uname -m)"
 
                 exit "${'$'}ok"
                 """.trimIndent() + "\n"
@@ -1371,7 +1268,7 @@ class LinuxRuntime(
                 """
                 #!/bin/sh
 
-                case "$1" in
+                case "${'$'}1" in
                     info)
                         exec linox-info
                         ;;
@@ -1400,14 +1297,12 @@ class LinuxRuntime(
                 "ll"
             )
 
-        if (
-            !ll.exists()
-        ) {
+        if (!ll.exists()) {
 
             ll.writeText(
                 """
                 #!/bin/sh
-                ls -lah "$@"
+                ls -lah "${'$'}@"
                 """.trimIndent() + "\n"
             )
 
@@ -1423,8 +1318,7 @@ class LinuxRuntime(
                 "etc/profile.d/linox.sh"
             )
 
-        profile.parentFile
-            ?.mkdirs()
+        profile.parentFile?.mkdirs()
 
         profile.writeText(
             """
@@ -1436,16 +1330,14 @@ class LinuxRuntime(
     }
 
     // -------------------------------------------------------------------------
-    // INTERACTIVE SHELL
+    // INTERACTIVE PTY
     // -------------------------------------------------------------------------
 
     fun startInteractivePty(
         onText: (String) -> Unit
     ): PtySession {
 
-        check(
-            isLinuxReady()
-        ) {
+        check(isLinuxReady()) {
             "Install an ARM64 PRoot and a Linux ARM64 distribution first."
         }
 
@@ -1458,39 +1350,43 @@ class LinuxRuntime(
                 File(
                     activeRootfsFile,
                     "bin/bash"
-                ).isFile ->
+                ).isFile -> {
 
                     listOf(
                         "/bin/bash",
                         "--login"
                     )
+                }
 
                 File(
                     activeRootfsFile,
                     "usr/bin/bash"
-                ).isFile ->
+                ).isFile -> {
 
                     listOf(
                         "/usr/bin/bash",
                         "--login"
                     )
+                }
 
                 File(
                     activeRootfsFile,
                     "bin/sh"
-                ).isFile ->
+                ).isFile -> {
 
                     listOf(
                         "/bin/sh",
                         "-l"
                     )
+                }
 
-                else ->
+                else -> {
 
                     listOf(
                         "/usr/bin/sh",
                         "-l"
                     )
+                }
             }
 
         val environment =
@@ -1512,15 +1408,19 @@ class LinuxRuntime(
 
         val session =
             PtySession.start(
-                proot.absolutePath,
-                baseProotArgs() + shell,
-                environment,
-                home.absolutePath
+                executable =
+                    proot.absolutePath,
+                args =
+                    baseProotArgs() + shell,
+                environment =
+                    environment,
+                workingDirectory =
+                    home.absolutePath
             )
 
         session.readLoop(
             onText
-        ) {}
+        )
 
         return session
     }
@@ -1534,13 +1434,11 @@ class LinuxRuntime(
         timeoutSeconds: Long = 60
     ): CommandResult {
 
-        if (
-            command.isBlank()
-        ) {
+        if (command.isBlank()) {
 
             return CommandResult(
-                "",
-                0
+                output = "",
+                exitCode = 0
             )
         }
 
@@ -1553,12 +1451,38 @@ class LinuxRuntime(
             installLinOxCommands()
         }
 
+        val shellPath =
+            if (linux) {
+
+                when {
+
+                    File(
+                        activeRootfsFile,
+                        "bin/sh"
+                    ).isFile ->
+                        "/bin/sh"
+
+                    File(
+                        activeRootfsFile,
+                        "usr/bin/sh"
+                    ).isFile ->
+                        "/usr/bin/sh"
+
+                    else ->
+                        "/bin/sh"
+                }
+
+            } else {
+
+                "/system/bin/sh"
+            }
+
         val args =
             if (linux) {
 
                 baseProotArgs() +
                     listOf(
-                        "/bin/sh",
+                        shellPath,
                         "-lc",
                         command
                     )
@@ -1566,7 +1490,7 @@ class LinuxRuntime(
             } else {
 
                 listOf(
-                    "/system/bin/sh",
+                    shellPath,
                     "-lc",
                     command
                 )
@@ -1575,9 +1499,7 @@ class LinuxRuntime(
         return try {
 
             val builder =
-                ProcessBuilder(
-                    args
-                )
+                ProcessBuilder(args)
                     .directory(
                         if (linux) {
                             home
@@ -1634,38 +1556,34 @@ class LinuxRuntime(
 
                     runCatching {
 
-                        process
-                            .inputStream
+                        process.inputStream
                             .bufferedReader()
                             .use { reader ->
 
                                 val buffer =
-                                    CharArray(
-                                        8192
-                                    )
+                                    CharArray(8192)
 
                                 while (true) {
 
                                     val count =
-                                        reader.read(
-                                            buffer
-                                        )
+                                        reader.read(buffer)
 
-                                    if (
-                                        count < 0
-                                    ) {
+                                    if (count < 0) {
                                         break
                                     }
 
-                                    synchronized(
-                                        output
-                                    ) {
+                                    if (count > 0) {
 
-                                        output.append(
-                                            buffer,
-                                            0,
-                                            count
-                                        )
+                                        synchronized(
+                                            output
+                                        ) {
+
+                                            output.append(
+                                                buffer,
+                                                0,
+                                                count
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1700,13 +1618,12 @@ class LinuxRuntime(
                 )
 
                 CommandResult(
-                    synchronized(
-                        output
-                    ) {
-                        output.toString()
-                    } +
-                        "\n[LinOx] command timed out",
-                    124
+                    output =
+                        synchronized(output) {
+                            output.toString()
+                        } +
+                            "\n[LinOx] command timed out",
+                    exitCode = 124
                 )
 
             } else {
@@ -1716,22 +1633,26 @@ class LinuxRuntime(
                 )
 
                 CommandResult(
-                    synchronized(
-                        output
-                    ) {
-                        output.toString()
-                    },
-                    process.exitValue()
+                    output =
+                        synchronized(output) {
+                            output.toString()
+                        },
+                    exitCode =
+                        process.exitValue()
                 )
             }
 
         } catch (error: Exception) {
 
             CommandResult(
-                "[LinOx] " +
-                    "${error.javaClass.simpleName}: " +
-                    error.message,
-                1
+                output =
+                    "[LinOx] " +
+                        "${error.javaClass.simpleName}: " +
+                        (
+                            error.message
+                                ?: "unknown error"
+                            ),
+                exitCode = 1
             )
         }
     }
@@ -1740,8 +1661,7 @@ class LinuxRuntime(
     // PROOT ARGUMENTS
     // -------------------------------------------------------------------------
 
-    private fun baseProotArgs():
-        List<String> {
+    private fun baseProotArgs(): List<String> {
 
         return buildList {
 
@@ -1767,14 +1687,12 @@ class LinuxRuntime(
             add("/system/bin:/android-bin")
 
             add("-b")
-
             add(
                 home.absolutePath +
                     ":/root"
             )
 
             add("-b")
-
             add(
                 tmp.absolutePath +
                     ":/tmp"
@@ -1817,9 +1735,7 @@ class LinuxRuntime(
             "Unsafe archive entry: $raw"
         }
 
-        return parts.joinToString(
-            "/"
-        )
+        return parts.joinToString("/")
     }
 
     private fun safeTarget(
@@ -1930,9 +1846,7 @@ class LinuxRuntime(
                 .inputStream
                 .bufferedReader()
                 .use { reader ->
-
-                    reader.readText()
-                        .trim()
+                    reader.readText().trim()
                 }
 
         }.getOrDefault("")
@@ -1976,10 +1890,8 @@ class LinuxRuntime(
 
                     ident[5].toInt() == 1 &&
 
-                    (
-                        ident[18].toInt()
-                            and 0xff
-                    ) == 183
+                    (ident[18].toInt() and 0xff) ==
+                    183
             }
 
         }.getOrDefault(false)
@@ -2005,22 +1917,18 @@ class LinuxRuntime(
             file: File
         ): Long {
 
-            if (
-                file.isFile
-            ) {
+            if (file.isFile) {
                 return file.length()
             }
 
             return file.listFiles()
-                ?.sumOf {
-                    dirSize(it)
+                ?.sumOf { child ->
+                    dirSize(child)
                 }
                 ?: 0L
         }
 
-        return dirSize(
-            runtimeDir
-        ) +
+        return dirSize(runtimeDir) +
             dirSize(
                 File(
                     context.filesDir,
@@ -2030,7 +1938,7 @@ class LinuxRuntime(
     }
 
     // -------------------------------------------------------------------------
-    // DATA CLASSES
+    // DATA
     // -------------------------------------------------------------------------
 
     private data class PendingSymlink(
@@ -2049,230 +1957,4 @@ class LinuxRuntime(
         val output: String,
         val exitCode: Int
     )
-}
-
-// =============================================================================
-// PTY SESSION
-// =============================================================================
-
-/**
- * Lightweight interactive process session.
- *
- * This provides stdin/stdout communication with the PRoot shell.
- * It is intentionally kept independent from the Activity.
- */
-class PtySession private constructor(
-    private val process: Process
-) {
-
-    private val writer =
-        process.outputStream
-            .bufferedWriter()
-
-    @Volatile
-    private var stopped =
-        false
-
-    // -------------------------------------------------------------------------
-    // CREATE
-    // -------------------------------------------------------------------------
-
-    companion object {
-
-        fun start(
-            executable: String,
-            arguments: List<String>,
-            environment: Map<String, String>,
-            workingDirectory: String
-        ): PtySession {
-
-            val command =
-                ArrayList<String>(
-                    arguments.size + 1
-                )
-
-            command += executable
-            command += arguments
-
-            val builder =
-                ProcessBuilder(
-                    command
-                )
-
-            builder.directory(
-                File(
-                    workingDirectory
-                )
-            )
-
-            val env =
-                builder.environment()
-
-            env.putAll(
-                environment
-            )
-
-            builder
-                .redirectErrorStream(true)
-
-            val process =
-                builder.start()
-
-            return PtySession(
-                process
-            )
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // SEND
-    // -------------------------------------------------------------------------
-
-    fun send(
-        command: String
-    ) {
-
-        if (
-            stopped
-        ) {
-            return
-        }
-
-        synchronized(
-            writer
-        ) {
-
-            runCatching {
-
-                writer.write(
-                    command
-                )
-
-                writer.newLine()
-
-                writer.flush()
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // READ
-    // -------------------------------------------------------------------------
-
-    fun readLoop(
-        onText: (String) -> Unit,
-        onClosed: () -> Unit
-    ) {
-
-        Thread {
-
-            try {
-
-                process
-                    .inputStream
-                    .bufferedReader()
-                    .use { reader ->
-
-                        val buffer =
-                            CharArray(
-                                4096
-                            )
-
-                        while (
-                            !stopped
-                        ) {
-
-                            val count =
-                                reader.read(
-                                    buffer
-                                )
-
-                            if (
-                                count < 0
-                            ) {
-                                break
-                            }
-
-                            if (
-                                count > 0
-                            ) {
-
-                                onText(
-                                    String(
-                                        buffer,
-                                        0,
-                                        count
-                                    )
-                                )
-                            }
-                        }
-                    }
-
-            } catch (_: Exception) {
-
-                // Process was closed.
-            } finally {
-
-                runCatching {
-                    onClosed()
-                }
-            }
-
-        }.apply {
-
-            name =
-                "LinOx-pty-reader"
-
-            isDaemon =
-                true
-
-        }.start()
-    }
-
-    // -------------------------------------------------------------------------
-    // STOP
-    // -------------------------------------------------------------------------
-
-    fun stop() {
-
-        if (
-            stopped
-        ) {
-            return
-        }
-
-        stopped =
-            true
-
-        synchronized(
-            writer
-        ) {
-
-            runCatching {
-                writer.close()
-            }
-        }
-
-        runCatching {
-            process.inputStream.close()
-        }
-
-        runCatching {
-            process.errorStream.close()
-        }
-
-        if (
-            process.isAlive
-        ) {
-
-            process.destroy()
-
-            if (
-                process.isAlive
-            ) {
-
-                process.destroyForcibly()
-            }
-        }
-    }
 }
