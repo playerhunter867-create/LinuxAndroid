@@ -3,45 +3,56 @@ package org.linox.mobile
 import java.io.File
 import java.io.OutputStream
 import java.nio.charset.Charset
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Lightweight interactive process session used by LinOx.
+ * Lightweight interactive process session for LinOx.
  *
- * This intentionally uses Android/Java ProcessBuilder only, so LinOx does not
- * need an additional PTY library just to build the APK.
+ * Uses the standard Java Process API.
+ * No external PTY library is required.
  */
 class PtySession private constructor(
     private val process: Process,
     private val input: OutputStream
 ) {
+
     private val stopped = AtomicBoolean(false)
 
     companion object {
+
         fun start(
             executable: String,
             args: List<String>,
             environment: Map<String, String> = emptyMap(),
             workingDirectory: String? = null
         ): PtySession {
+
             val command = ArrayList<String>(args.size + 1)
+
             command.add(executable)
             command.addAll(args)
 
-            val builder = ProcessBuilder(command)
-                .redirectErrorStream(true)
+            val builder =
+                ProcessBuilder(command)
+                    .redirectErrorStream(true)
 
-            if (workingDirectory != null) {
-                val dir = File(workingDirectory)
-                if (dir.isDirectory) {
-                    builder.directory(dir)
+            if (!workingDirectory.isNullOrBlank()) {
+                val directory =
+                    File(workingDirectory)
+
+                if (directory.isDirectory) {
+                    builder.directory(directory)
                 }
             }
 
-            val env = builder.environment()
+            val env =
+                builder.environment()
+
             env.putAll(environment)
 
-            val process = builder.start()
+            val process =
+                builder.start()
 
             return PtySession(
                 process = process,
@@ -50,79 +61,170 @@ class PtySession private constructor(
         }
     }
 
-    fun send(command: String) {
-        if (stopped.get() || !process.isAlive) return
+    /**
+     * Sends one command to the running shell.
+     */
+    fun send(
+        command: String
+    ) {
+
+        if (stopped.get()) {
+            return
+        }
+
+        if (!process.isAlive) {
+            return
+        }
 
         try {
-            input.write(command.toByteArray(Charsets.UTF_8))
-            input.write('\n'.code)
+
+            input.write(
+                command.toByteArray(
+                    Charsets.UTF_8
+                )
+            )
+
+            input.write(
+                '\n'.code
+            )
+
             input.flush()
+
         } catch (_: Exception) {
-            // The process may have exited between isAlive and write().
+            // Process may have exited between the checks.
         }
     }
 
+    /**
+     * Starts a background thread that forwards process output.
+     */
     fun readLoop(
         onText: (String) -> Unit,
         onExit: (Int) -> Unit = {}
     ) {
+
         Thread {
+
             var exitCode = -1
 
             try {
-                process.inputStream.use { stream ->
-                    val buffer = ByteArray(8192)
 
-                    while (!stopped.get()) {
-                        val count = stream.read(buffer)
-                        if (count < 0) break
+                process.inputStream.use { stream ->
+
+                    val buffer =
+                        ByteArray(8192)
+
+                    while (
+                        !stopped.get()
+                    ) {
+
+                        val count =
+                            stream.read(buffer)
+
+                        if (count < 0) {
+                            break
+                        }
 
                         if (count > 0) {
-                            onText(
+
+                            val text =
                                 String(
                                     buffer,
                                     0,
                                     count,
                                     Charset.forName("UTF-8")
                                 )
-                            )
+
+                            onText(text)
                         }
                     }
                 }
 
-                exitCode = process.waitFor()
-            } catch (e: Exception) {
+                exitCode =
+                    process.waitFor()
+
+            } catch (error: Exception) {
+
                 if (!stopped.get()) {
-                    onText("\n[LinOx] ${e.message ?: e.javaClass.simpleName}\n")
+
+                    val message =
+                        error.message
+                            ?: error.javaClass.simpleName
+
+                    onText(
+                        "\n[LinOx] $message\n"
+                    )
                 }
+
             } finally {
+
                 onExit(exitCode)
             }
+
         }.apply {
-            name = "LinOx-pty-reader"
-            isDaemon = true
+
+            name =
+                "LinOx-pty-reader"
+
+            isDaemon =
+                true
+
             start()
         }
     }
 
+    /**
+     * Stops the process and closes stdin.
+     */
     fun stop() {
-        if (!stopped.compareAndSet(false, true)) return
 
-        runCatching { input.close() }
+        if (
+            !stopped.compareAndSet(
+                false,
+                true
+            )
+        ) {
+            return
+        }
+
+        runCatching {
+            input.close()
+        }
 
         if (process.isAlive) {
-            process.destroy()
+
+            runCatching {
+                process.destroy()
+            }
 
             try {
-                if (!process.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+
+                if (
+                    !process.waitFor(
+                        500,
+                        TimeUnit.MILLISECONDS
+                    )
+                ) {
+
                     process.destroyForcibly()
+
+                    process.waitFor(
+                        1,
+                        TimeUnit.SECONDS
+                    )
                 }
-            } catch (_: InterruptedException) {
+
+            } catch (
+                _: InterruptedException
+            ) {
+
                 process.destroyForcibly()
+
                 Thread.currentThread().interrupt()
             }
         }
     }
 
-    fun isAlive(): Boolean = process.isAlive
+    fun isAlive(): Boolean =
+        process.isAlive
 }
