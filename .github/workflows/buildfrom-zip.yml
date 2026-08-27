@@ -5,8 +5,8 @@ on:
     branches:
       - main
     paths:
-      - "**/*.zip"
       - "*.zip"
+      - "**/*.zip"
       - ".github/workflows/build.yml"
   workflow_dispatch:
 
@@ -18,79 +18,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Find and extract project ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== Repository files ==="
-          find . -maxdepth 3 -type f | sort | head -300
-
-          ZIP_FILE="$(find . -type f -iname '*.zip' \
-            -not -path './.git/*' \
-            -not -path './.github/*' \
-            | sort \
-            | head -n 1)"
-
-          if [ -z "${ZIP_FILE:-}" ]; then
-            echo "::error::No project ZIP file was found."
-            exit 1
-          fi
-
-          echo "Using ZIP: $ZIP_FILE"
-
-          rm -rf "$GITHUB_WORKSPACE/_build"
-          mkdir -p "$GITHUB_WORKSPACE/_build"
-
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/_build"
-
-          echo "=== Extracted files ==="
-          find "$GITHUB_WORKSPACE/_build" -maxdepth 5 -type f | sort | head -300
-
-          PROJECT_DIR=""
-
-          SETTINGS_KTS="$(find "$GITHUB_WORKSPACE/_build" \
-            -type f \
-            -name 'settings.gradle.kts' \
-            -print -quit)"
-
-          if [ -n "${SETTINGS_KTS:-}" ]; then
-            PROJECT_DIR="$(dirname "$SETTINGS_KTS")"
-          fi
-
-          if [ -z "${PROJECT_DIR:-}" ]; then
-            SETTINGS_GRADLE="$(find "$GITHUB_WORKSPACE/_build" \
-              -type f \
-              -name 'settings.gradle' \
-              -print -quit)"
-
-            if [ -n "${SETTINGS_GRADLE:-}" ]; then
-              PROJECT_DIR="$(dirname "$SETTINGS_GRADLE")"
-            fi
-          fi
-
-          if [ -z "${PROJECT_DIR:-}" ]; then
-            echo "::error::Could not find settings.gradle or settings.gradle.kts."
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] \
-             && [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::Android app module was not found."
-            echo "PROJECT_DIR=$PROJECT_DIR"
-            find "$PROJECT_DIR" -maxdepth 4 -type f | sort
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "================================"
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-          echo "================================"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -103,40 +33,160 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Verify actual Gradle version
+      - name: Verify Gradle version
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== Gradle executable ==="
-          which gradle
+          echo "========================================"
+          echo "Checking Gradle version"
+          echo "========================================"
 
-          echo "=== Gradle version ==="
+          which gradle
           gradle --version
 
           VERSION="$(gradle --version | grep '^Gradle ' | awk '{print $2}')"
 
-          echo "Detected Gradle version: $VERSION"
+          echo "Detected Gradle: $VERSION"
 
           if [ "$VERSION" != "8.10.2" ]; then
-            echo "::error::Wrong Gradle version detected!"
-            echo "Expected: 8.10.2"
-            echo "Actual: $VERSION"
+            echo "::error::Wrong Gradle version: $VERSION"
+            echo "::error::Expected Gradle 8.10.2"
             exit 1
           fi
 
-          echo "Gradle 8.10.2 is correctly active."
+          echo "Gradle 8.10.2 is active."
 
-      - name: Clean old build directory
+      - name: Find and extract project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Searching for project ZIP"
+          echo "========================================"
+
+          ZIP_FILE=""
+
+          while IFS= read -r file; do
+            if [ -n "$file" ]; then
+              ZIP_FILE="$file"
+              break
+            fi
+          done < <(
+            find . \
+              -type f \
+              -iname "*.zip" \
+              -not -path "./.git/*" \
+              -not -path "./.github/*" \
+              | sort
+          )
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::No project ZIP was found."
+            exit 1
+          fi
+
+          echo "Using ZIP:"
+          echo "$ZIP_FILE"
+
+          rm -rf "$GITHUB_WORKSPACE/_build"
+          mkdir -p "$GITHUB_WORKSPACE/_build"
+
+          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/_build"
+
+          echo "========================================"
+          echo "ZIP extracted"
+          echo "========================================"
+
+          find "$GITHUB_WORKSPACE/_build" \
+            -maxdepth 5 \
+            -type f \
+            | sort \
+            | head -300
+
+      - name: Locate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Locating Android Gradle project"
+          echo "========================================"
+
+          PROJECT_DIR=""
+
+          SETTINGS_KTS="$(
+            find "$GITHUB_WORKSPACE/_build" \
+              -type f \
+              -name "settings.gradle.kts" \
+              -print \
+              | head -n 1
+          )"
+
+          if [ -n "$SETTINGS_KTS" ]; then
+            PROJECT_DIR="$(dirname "$SETTINGS_KTS")"
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            SETTINGS_GRADLE="$(
+              find "$GITHUB_WORKSPACE/_build" \
+                -type f \
+                -name "settings.gradle" \
+                -print \
+                | head -n 1
+            )"
+
+            if [ -n "$SETTINGS_GRADLE" ]; then
+              PROJECT_DIR="$(dirname "$SETTINGS_GRADLE")"
+            fi
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::settings.gradle or settings.gradle.kts was not found."
+            exit 1
+          fi
+
+          if [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "Found Android project."
+          elif [ -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "Found Android project."
+          else
+            echo "::error::Android app module was not found."
+            echo "Project directory:"
+            echo "$PROJECT_DIR"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "========================================"
+          echo "PROJECT_DIR:"
+          echo "$PROJECT_DIR"
+          echo "========================================"
+
+      - name: Prepare Gradle wrapper
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          rm -rf build
-          rm -rf app/build
+          echo "========================================"
+          echo "Preparing Gradle"
+          echo "========================================"
 
-          echo "Old build files removed."
+          mkdir -p gradle/wrapper
+
+          cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.10.2-all.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          echo "Gradle wrapper configuration:"
+          cat gradle/wrapper/gradle-wrapper.properties
 
       - name: Build Debug APK
         shell: bash
@@ -144,9 +194,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "================================"
+          echo "========================================"
           echo "BUILDING LIN OX DEBUG APK"
-          echo "================================"
+          echo "========================================"
+
+          rm -rf app/build
 
           gradle \
             :app:assembleDebug \
@@ -154,25 +206,38 @@ jobs:
             --stacktrace \
             --console=plain
 
+          echo "========================================"
+          echo "BUILD FINISHED"
+          echo "========================================"
+
       - name: Find generated APK
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== Searching for APK ==="
+          echo "========================================"
+          echo "Searching for generated APK"
+          echo "========================================"
 
-          APK="$(find "$PROJECT_DIR/app/build/outputs/apk" \
-            -type f \
-            -name '*.apk' \
-            -print \
-            | head -n 1)"
+          APK=""
 
-          if [ -z "${APK:-}" ]; then
-            echo "::error::APK was not generated."
+          while IFS= read -r file; do
+            if [ -n "$file" ]; then
+              APK="$file"
+              break
+            fi
+          done < <(
+            find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+              -type f \
+              -name "*.apk" \
+              | sort
+          )
 
-            echo "=== Build output ==="
-            find "$PROJECT_DIR/app/build" \
-              -maxdepth 8 \
+          if [ -z "$APK" ]; then
+            echo "::error::Debug APK was not generated."
+
+            echo "Build output:"
+            find "$PROJECT_DIR/app/build/outputs" \
               -type f \
               -print \
               2>/dev/null || true
@@ -185,16 +250,10 @@ jobs:
 
           echo "APK=$APK" >> "$GITHUB_ENV"
 
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f "$APK" ]; then
-            echo "::error::APK file does not exist."
-            exit 1
-          fi
-
-          SIZE="$(stat -c%s "$APK")"
-
-          echo "APK size: $SIZE
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinOx-debug-APK
+          path: ${{ env.APK }}
+          if-no-files-found: error
+          retention-days: 14
